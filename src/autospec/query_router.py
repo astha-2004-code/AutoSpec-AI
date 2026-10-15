@@ -98,7 +98,7 @@ class QueryRouter:
         if any(term in q_lower for term in self.TORQUE_TERMS):
             spec_type = "torque"
         elif any(term in q_lower for term in self.CAPACITY_TERMS):
-            spec_type = "capacity"
+            spec_type = "fluid_capacity"
         elif any(term in q_lower for term in self.DIMENSION_TERMS):
             spec_type = "dimension"
         elif any(term in q_lower for term in self.PART_NO_TERMS):

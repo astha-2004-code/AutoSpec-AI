@@ -278,7 +278,143 @@ class TableAwareChunker:
         if "material" not in text.lower() and "fill capacity" not in text.lower() and "capacity" not in text.lower():
             return chunks
 
-        # Common fluid capacities in manuals: e.g. "1,420 ml (3 pt)", "2.84L (6.0 pt)"
+        # 1. Structured Ford Material table block parser (multi-line layout)
+        mat_match = re.search(
+            r"Material\s*\n\s*Item.*?(?=(?:Item\s*\n\s*Specification|Description\s*\n\s*Nm|SECTION|\Z))",
+            text,
+            re.DOTALL | re.IGNORECASE,
+        )
+        if mat_match:
+            block = mat_match.group(0)
+            raw_lines = [line.strip() for line in block.splitlines() if line.strip()]
+            headers = {"material", "item", "specification", "fill", "capacity"}
+            content_lines = [line for line in raw_lines if line.lower() not in headers and line not in ("—", "-", "")]
+
+            entries: list[dict[str, str]] = []
+            curr_item: list[str] = []
+            curr_parts: list[str] = []
+            curr_specs: list[str] = []
+            curr_caps: list[str] = []
+            state = "item"
+
+            for line in content_lines:
+                if re.search(r"\b(?:PM-[0-9]-[A-Z]|CPM-[0-9]|XL-[0-9]|XT-[0-9]|XG-[0-9])", line, re.I):
+                    state = "part"
+                    curr_parts.append(line)
+                elif re.search(r"\b(?:WSS-[A-Z0-9\-]+|WSK-[A-Z0-9\-]+|ESB-[A-Z0-9\-]+)", line, re.I):
+                    state = "spec"
+                    curr_specs.append(line)
+                elif re.search(r"[0-9,]+(?:\.[0-9]+)?\s*(?:ml|l|pt|qt|gal)", line, re.I):
+                    state = "cap"
+                    curr_caps.append(line)
+                elif line.startswith("(") and line.endswith(")") and state == "part":
+                    curr_parts.append(line)
+                elif line.startswith("(") and line.endswith(")") and state == "cap":
+                    curr_caps.append(line)
+                elif state in ("spec", "cap") and ("WSS-" in line or "or" in line):
+                    curr_specs.append(line)
+                else:
+                    if state != "item":
+                        entries.append(
+                            {
+                                "item": " ".join(curr_item),
+                                "part_no": " ".join(curr_parts),
+                                "spec": " ".join(curr_specs),
+                                "capacity": " ".join(curr_caps),
+                            }
+                        )
+                        curr_item = [line]
+                        curr_parts = []
+                        curr_specs = []
+                        curr_caps = []
+                        state = "item"
+                    else:
+                        curr_item.append(line)
+
+            if curr_item:
+                entries.append(
+                    {
+                        "item": " ".join(curr_item),
+                        "part_no": " ".join(curr_parts),
+                        "spec": " ".join(curr_specs),
+                        "capacity": " ".join(curr_caps),
+                    }
+                )
+
+            for entry in entries:
+                item_name = entry["item"].strip()
+                p_no = entry["part_no"].strip()
+                s_code = entry["spec"].strip()
+                cap_val = entry["capacity"].strip()
+
+                if not item_name or item_name in ("Item", "Material"):
+                    continue
+
+                if cap_val:
+                    c_content = (
+                        f"[{sec_title} (Section {sec_id}, Page {page_num}) | Fluid Capacity] "
+                        f"Item: {item_name} | Fill Capacity: {cap_val} | Part Number: {p_no} | Spec: {s_code} | Subsystem: {subsystem}"
+                    )
+                    c_raw = f"{item_name} | {cap_val} | {p_no} | {s_code}"
+                    chunk_id = f"{doc_name}_p{page_num}_matcap_{abs(hash(item_name)) % 100000}"
+                    chunks.append(
+                        SpecificationChunk(
+                            chunk_id=chunk_id,
+                            document_name=doc_name,
+                            page_number=page_num,
+                            section_id=sec_id,
+                            section_title=sec_title,
+                            subsystem=subsystem,
+                            chunk_type="spec_row",
+                            content=c_content,
+                            raw_evidence=c_raw,
+                            table_name="Material Specifications",
+                            component=item_name,
+                            part_number=p_no,
+                            primary_value=cap_val,
+                            primary_unit="capacity",
+                            metadata={
+                                "spec_type": "fluid_capacity",
+                                "ford_spec": s_code,
+                                "part_number": p_no,
+                                "capacity": cap_val,
+                            },
+                        )
+                    )
+
+                if p_no:
+                    p_content = (
+                        f"[{sec_title} (Section {sec_id}, Page {page_num}) | Part Number Specification] "
+                        f"Item: {item_name} | Part Number: {p_no} | Spec: {s_code} | Fill Capacity: {cap_val} | Subsystem: {subsystem}"
+                    )
+                    p_raw = f"{item_name} | {p_no} | {s_code} | {cap_val}"
+                    p_id = f"{doc_name}_p{page_num}_matpart_{abs(hash(item_name)) % 100000}"
+                    chunks.append(
+                        SpecificationChunk(
+                            chunk_id=p_id,
+                            document_name=doc_name,
+                            page_number=page_num,
+                            section_id=sec_id,
+                            section_title=sec_title,
+                            subsystem=subsystem,
+                            chunk_type="spec_row",
+                            content=p_content,
+                            raw_evidence=p_raw,
+                            table_name="Material Specifications",
+                            component=item_name,
+                            part_number=p_no,
+                            primary_value=p_no,
+                            primary_unit="part_number",
+                            metadata={
+                                "spec_type": "part_number",
+                                "ford_spec": s_code,
+                                "part_number": p_no,
+                                "capacity": cap_val,
+                            },
+                        )
+                    )
+
+        # 2. General single-line fluid capacities: e.g. "1,420 ml (3 pt)", "2.84L (6.0 pt)"
         fluid_capacity_re = re.compile(
             r"([A-Za-z0-9\s®\-\(\)]+?)\s+([A-Z0-9]{2,4}-[A-Z0-9\-]+(?:\s*\([A-Za-z]+\))?)\s+([A-Z0-9\-]+(?: or [A-Z0-9\-]+)?)\s+([0-9\.,]+\s*(?:ml|l|pt|qt|gal)[^\n\r]*)",
             re.IGNORECASE,
@@ -322,7 +458,7 @@ class TableAwareChunker:
                 )
             )
 
-        # Additional specific regex for brake fluid / oil fill capacity blocks
+        # 3. Additional specific regex for brake fluid / oil fill capacity blocks
         cap_block_re = re.compile(
             r"([0-9\.,]+\s*(?:ml|l|liters?|pt|qt|gal)(?:\s*\([^\)]+\))?)",
             re.IGNORECASE,
@@ -372,30 +508,28 @@ class TableAwareChunker:
         """Extract dimensions, minimum thicknesses, runout, and backlash specifications."""
         chunks: list[SpecificationChunk] = []
 
-        # Common dimension patterns: e.g. "32 mm (1.259 in)", "3.0 mm (0.118 in)", "0.203-0.304 mm (0.008-0.012 in)"
-        dim_line_re = re.compile(
-            r"^(.*?)\s+([0-9\.\-]+)\s*mm\s*(?:\(([0-9\.\-]+)\s*in\))?$",
-            re.IGNORECASE,
-        )
+        raw_lines = [line.strip() for line in text.splitlines() if line.strip()]
+        i = 0
 
-        lines = text.splitlines()
-        for idx, line in enumerate(lines):
-            line_str = line.strip()
-            dim_match = dim_line_re.match(line_str)
-            if dim_match:
-                comp = dim_match.group(1).strip()
-                val_mm = dim_match.group(2).strip()
-                val_in = dim_match.group(3).strip() if dim_match.group(3) else ""
+        while i < len(raw_lines):
+            line = raw_lines[i]
 
-                if not comp and idx > 0:
-                    comp = lines[idx - 1].strip()
+            # Case A: Component and dimension on the same line
+            m_same = re.match(
+                r"^(.*?)\s+([0-9\.\-]+)\s*mm(?:\s*\(([0-9\.\-]+)\s*in\))?$",
+                line,
+                re.IGNORECASE,
+            )
+            if m_same and m_same.group(1):
+                comp = m_same.group(1).strip()
+                val_mm = m_same.group(2).strip()
+                val_in = m_same.group(3).strip() if m_same.group(3) else ""
 
                 content = (
                     f"[{sec_title} (Section {sec_id}, Page {page_num}) | Dimension Specification] "
                     f"Component: {comp} | Minimum/Clearance: {val_mm} mm ({val_in} in) | Subsystem: {subsystem}"
                 )
                 evidence = f"{comp} {val_mm} mm ({val_in} in)"
-
                 chunk_id = f"{doc_name}_p{page_num}_dim_{abs(hash(comp)) % 100000}"
                 chunks.append(
                     SpecificationChunk(
@@ -417,6 +551,52 @@ class TableAwareChunker:
                         metadata={"spec_type": "dimension", "mm": val_mm, "in": val_in},
                     )
                 )
+                i += 1
+                continue
+
+            # Case B: Component description on line i, dimension value on line i+1
+            if i + 1 < len(raw_lines):
+                next_line = raw_lines[i + 1]
+                m_next = re.match(
+                    r"^([0-9\.\-]+)\s*mm(?:\s*\(([0-9\.\-]+)\s*in\))?$",
+                    next_line,
+                    re.IGNORECASE,
+                )
+                if m_next and not re.match(r"^(Item|Specification|Description|SECTION|Procedure|General)", line, re.I):
+                    comp = line
+                    val_mm = m_next.group(1).strip()
+                    val_in = m_next.group(2).strip() if m_next.group(2) else ""
+
+                    content = (
+                        f"[{sec_title} (Section {sec_id}, Page {page_num}) | Dimension Specification] "
+                        f"Component: {comp} | Minimum/Clearance: {val_mm} mm ({val_in} in) | Subsystem: {subsystem}"
+                    )
+                    evidence = f"{comp} {val_mm} mm ({val_in} in)"
+                    chunk_id = f"{doc_name}_p{page_num}_dim_{abs(hash(comp)) % 100000}"
+                    chunks.append(
+                        SpecificationChunk(
+                            chunk_id=chunk_id,
+                            document_name=doc_name,
+                            page_number=page_num,
+                            section_id=sec_id,
+                            section_title=sec_title,
+                            subsystem=subsystem,
+                            chunk_type="spec_row",
+                            content=content,
+                            raw_evidence=evidence,
+                            table_name="Dimension & Clearance Specifications",
+                            component=comp,
+                            primary_value=val_mm,
+                            primary_unit="mm",
+                            alternate_value=val_in,
+                            alternate_unit="in" if val_in else "",
+                            metadata={"spec_type": "dimension", "mm": val_mm, "in": val_in},
+                        )
+                    )
+                    i += 2
+                    continue
+
+            i += 1
 
         return chunks
 

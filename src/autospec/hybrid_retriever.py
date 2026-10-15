@@ -45,8 +45,8 @@ class HybridRetriever:
         parsed = self.query_router.parse_query(query)
         effective_subsystem = subsystem_filter or parsed.target_subsystem
 
-        # Retrieve a broader candidate pool (top_k * 4) for fusion
-        candidate_k = max(20, top_k * 4)
+        # Retrieve a broader candidate pool (top_k * 8) for fusion
+        candidate_k = max(50, top_k * 8)
 
         # 2. Dense Semantic Search (FAISS)
         dense_results: list[tuple[SpecificationChunk, float]] = []
@@ -107,12 +107,18 @@ class HybridRetriever:
 
             # (B) Component hint boost
             for hint in parsed.component_hints:
-                if hint.lower() in chunk.component.lower() or hint.lower() in chunk.content.lower():
-                    multiplier *= 1.3
+                if hint.lower() in chunk.component.lower():
+                    multiplier *= 1.5
+                elif hint.lower() in chunk.content.lower():
+                    multiplier *= 1.2
 
-            # (C) Spec-type match boost
-            if parsed.spec_type and chunk.metadata.get("spec_type") == parsed.spec_type:
-                multiplier *= 1.2
+            # (C) Spec-type match boost and mismatch penalty
+            if parsed.spec_type:
+                chunk_spec_type = chunk.metadata.get("spec_type")
+                if chunk_spec_type == parsed.spec_type:
+                    multiplier *= 1.6
+                elif chunk_spec_type and chunk_spec_type != parsed.spec_type:
+                    multiplier *= 0.6
 
             # (D) Structured spec_row priority boost
             if chunk.chunk_type == "spec_row":

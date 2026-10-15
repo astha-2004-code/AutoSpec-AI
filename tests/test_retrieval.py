@@ -80,7 +80,7 @@ def test_query_router():
 
     # Capacity query
     q3 = router.parse_query("What is the brake fluid fill capacity?")
-    assert q3.spec_type == "capacity"
+    assert q3.spec_type in ("capacity", "fluid_capacity")
 
 
 def test_hybrid_retriever_front_vs_rear_isolation(temp_dir: Path, sample_chunks: list[SpecificationChunk], mock_embedder: DeterministicMockEmbedder):

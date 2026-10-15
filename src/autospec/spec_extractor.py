@@ -87,26 +87,68 @@ class SpecificationExtractor:
         extracted: list[VehicleSpecification] = []
         q_lower = query.lower()
 
-        for chunk, score in retrieved_chunks:
-            # Case 1: The retrieved chunk is already an explicitly parsed specification row
-            if chunk.chunk_type == "spec_row" and chunk.component and chunk.primary_value:
-                # Check component relevance against query terms
-                comp_lower = chunk.component.lower()
-                query_words = [w for w in q_lower.split() if len(w) > 3 and w not in ("what", "torque", "specs", "specification", "values")]
-                
-                # If query contains specific component terms, verify they match
-                if query_words and not any(w in comp_lower or comp_lower in w for w in query_words):
-                    # Check if query matches table/subsystem
-                    pass
+        stopwords = {
+            "what",
+            "is",
+            "the",
+            "for",
+            "in",
+            "to",
+            "at",
+            "how",
+            "much",
+            "of",
+            "and",
+            "or",
+            "torque",
+            "spec",
+            "specs",
+            "specification",
+            "specifications",
+            "value",
+            "values",
+            "procedure",
+            "tighten",
+            "tightening",
+            "requirement",
+            "requirements",
+        }
+        raw_words = [w.strip("?,.:;\"'()") for w in q_lower.split() if len(w.strip("?,.:;\"'()")) > 2]
+        discriminative = [w for w in raw_words if w not in stopwords]
 
+        is_part_no_query = any(term in q_lower for term in ("part number", "part #", "part no", "spec code"))
+        is_capacity_query = any(term in q_lower for term in ("capacity", "fluid", "fill", "oil", "how much", "quarts", "pints", "liters", "ml"))
+
+        for chunk, score in retrieved_chunks:
+            combined_text = f"{chunk.component} {chunk.content} {chunk.raw_evidence}".lower()
+
+            # Zero hallucination: reject chunks if query contains technical nouns not found anywhere in chunk
+            if discriminative:
+                matching_words = [w for w in discriminative if w in combined_text]
+                if not matching_words:
+                    continue
+
+            # Case 1: The retrieved chunk is already an explicitly parsed specification row
+            if chunk.chunk_type == "spec_row" and chunk.component and (chunk.primary_value or chunk.part_number):
                 spec_type = chunk.metadata.get("spec_type", SpecType.TORQUE.value)
                 source_q = chunk.raw_evidence or f"{chunk.component} {chunk.primary_value} {chunk.primary_unit}"
+
+                val = chunk.primary_value
+                unit = chunk.primary_unit
+
+                if is_part_no_query and (chunk.part_number or spec_type == "part_number"):
+                    val = chunk.part_number or chunk.primary_value
+                    unit = "part_number"
+                    spec_type = SpecType.PART_NUMBER.value
+                elif is_capacity_query and spec_type == "fluid_capacity":
+                    val = chunk.primary_value
+                    unit = "capacity"
 
                 spec = VehicleSpecification(
                     component=chunk.component,
                     spec_type=spec_type,
-                    value=chunk.primary_value,
-                    unit=chunk.primary_unit,
+                    value=val,
+                    unit=unit,
                     alternate_value=chunk.alternate_value or None,
                     alternate_unit=chunk.alternate_unit or None,
                     part_number=chunk.part_number or None,
@@ -127,7 +169,16 @@ class SpecificationExtractor:
                 passage_specs = self._scan_passage_for_specifications(chunk, score)
                 extracted.extend(passage_specs)
 
-        # Deduplicate results by (component, value, section, page)
+        # Deduplicate and rank results by component keyword overlap
+        def compute_relevance(s: VehicleSpecification) -> tuple[int, float]:
+            comp_l = s.component.lower()
+            overlap = sum(1 for w in discriminative if w in comp_l)
+            # Bonus if spec_type matches query intent
+            type_bonus = 1 if (is_part_no_query and s.spec_type == "part_number") or (is_capacity_query and s.spec_type == "fluid_capacity") else 0
+            return (overlap + type_bonus, s.retrieval_score)
+
+        extracted.sort(key=compute_relevance, reverse=True)
+
         unique_specs: list[VehicleSpecification] = []
         seen = set()
         for s in extracted:
@@ -147,9 +198,9 @@ class SpecificationExtractor:
         specs: list[VehicleSpecification] = []
         text = chunk.raw_evidence or chunk.content
 
-        # Pattern 1: Fastener torque: '... bolts 35 Nm (26 lb-ft)'
+        # Pattern 1: Fastener torque: '... bolts to 250 Nm (184 lb-ft)' or '... bolts 35 Nm 26 lb-ft'
         torque_pattern = re.compile(
-            r"([A-Za-z0-9\s\-]+?(?:bolts?|nuts?|screws?|valve|fitting))\s+([0-9\.]+)\s*(Nm|lb-ft|lb-in)(?:\s+([0-9\.]+)\s*(lb-ft|lb-in))?",
+            r"([A-Za-z0-9\s\-]+?(?:bolts?|nuts?|screws?|valve|fitting))\s+(?:to|at)?\s*([0-9\.]+)\s*(Nm|lb-ft|lb-in)(?:\s*(?:\(|\/)?\s*([0-9\.]+)\s*(lb-ft|lb-in|Nm)\)?)?",
             re.IGNORECASE,
         )
 
