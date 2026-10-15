@@ -1,0 +1,59 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments and Virtualenvs
+.venv/
+venv/
+ENV/
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Testing and Linting
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Environment Variables and Credentials
+.env
+.env.local
+*.pem
+*.key
+
+# AutoSpec Application Storage, Indexes & Uploads
+# NOTE: In accordance with project requirements, generated indexes,
+# extracted text, and uploaded documents are strictly untracked.
+storage/
+indexes/
+uploads/
+cache/
+*.faiss
+*.index
+
+# Strictly exclude PDFs - Manual and uploads must remain outside Git
+*.pdf
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
