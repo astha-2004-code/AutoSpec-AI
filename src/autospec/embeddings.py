@@ -13,6 +13,10 @@ from autospec.config import settings
 class EmbedderProtocol(Protocol):
     """Protocol for embedding generators."""
 
+    @property
+    def dimension(self) -> int:
+        ...
+
     def embed_query(self, query: str) -> np.ndarray:
         ...
 
@@ -37,17 +41,19 @@ class SentenceTransformerEmbedder:
     def model(self):
         """Lazy load model on first inference call."""
         if self._model is None:
+            from sentence_transformers import SentenceTransformer
 
+            self._model = SentenceTransformer(self.model_name, device=self.device)
             if hasattr(self._model, "get_embedding_dimension"):
                 self._dimension = self._model.get_embedding_dimension()
-            else:
+            elif hasattr(self._model, "get_sentence_embedding_dimension"):
                 self._dimension = self._model.get_sentence_embedding_dimension()
         return self._model
 
     @property
     def dimension(self) -> int:
         """Vector dimension of the embedding model."""
-        return self._dimension
+        return int(self._dimension or settings.embedding_dim)
 
     def embed_texts(
         self,

@@ -49,7 +49,7 @@ class ExportManager:
         ordered_cols = [c for c in cls.EXPORT_COLUMNS if c in df.columns] + [
             c for c in df.columns if c not in cls.EXPORT_COLUMNS
         ]
-        return df[ordered_cols]
+        return pd.DataFrame(df[ordered_cols])
 
     @classmethod
     def to_csv(cls, specs: list[VehicleSpecification]) -> str:

@@ -251,7 +251,7 @@ class SpecificationExtractor:
 
         # Standard OpenAI client integration
         if self.provider == "openai":
-            from openai import OpenAI
+            from openai import OpenAI  # type: ignore[import-not-found,import-untyped]
 
             client = OpenAI(
                 api_key=self.api_key,

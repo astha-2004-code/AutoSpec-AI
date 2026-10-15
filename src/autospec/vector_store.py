@@ -25,7 +25,7 @@ class FAISSVectorStore:
         self.index_dir = index_dir or settings.get_index_dir()
         self.index_dir.mkdir(parents=True, exist_ok=True)
         self.embedding_dim = embedding_dim
-        self.index: faiss.IndexFlatIP | None = None
+        self.index: faiss.Index | None = None
         self.chunks: list[SpecificationChunk] = []
         self.manifest: dict[str, Any] = {}
 

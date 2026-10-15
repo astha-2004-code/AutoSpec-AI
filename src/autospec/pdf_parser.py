@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pymupdf  # PyMuPDF official import
 
@@ -190,14 +190,14 @@ class PDFParser:
         try:
             for idx, page_num in enumerate(range(s_page, e_page + 1)):
                 page = doc.load_page(page_num - 1)
-                text = page.get_text("text") or ""
+                text = cast(str, page.get_text("text") or "")
                 stripped = text.strip()
                 char_count = len(stripped)
                 words = stripped.split()
                 word_count = len(words)
 
                 # Extract block details for layout awareness
-                blocks_raw = page.get_text("blocks") or []
+                blocks_raw = cast(list[Any], page.get_text("blocks") or [])
                 block_dicts: list[dict[str, Any]] = []
                 for b_idx, b in enumerate(blocks_raw):
                     if len(b) >= 5:
