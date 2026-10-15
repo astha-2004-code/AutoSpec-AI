@@ -114,6 +114,10 @@ class HybridRetriever:
             if parsed.spec_type and chunk.metadata.get("spec_type") == parsed.spec_type:
                 multiplier *= 1.2
 
+            # (D) Structured spec_row priority boost
+            if chunk.chunk_type == "spec_row":
+                multiplier *= 1.4
+
             final_scores.append((chunk, base_score * multiplier))
 
         # 6. Sort and Deduplicate

@@ -39,9 +39,10 @@ class SentenceTransformerEmbedder:
         if self._model is None:
             from sentence_transformers import SentenceTransformer
 
-            self._model = SentenceTransformer(self.model_name, device=self.device)
-            # Detect actual dimension
-            self._dimension = self._model.get_sentence_embedding_dimension()
+            if hasattr(self._model, "get_embedding_dimension"):
+                self._dimension = self._model.get_embedding_dimension()
+            else:
+                self._dimension = self._model.get_sentence_embedding_dimension()
         return self._model
 
     @property
