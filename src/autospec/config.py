@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Literal
 
@@ -148,10 +147,10 @@ def validate_pdf_path(path_str: str | Path, max_size_mb: int = 100) -> Path:
 
     try:
         resolved = path.resolve(strict=True)
-    except FileNotFoundError:
-        raise DocumentValidationError(f"Document not found at path: {path}")
-    except PermissionError:
-        raise DocumentValidationError(f"Permission denied accessing path: {path}")
+    except FileNotFoundError as err:
+        raise DocumentValidationError(f"Document not found at path: {path}") from err
+    except PermissionError as err:
+        raise DocumentValidationError(f"Permission denied accessing path: {path}") from err
 
     if not resolved.is_file():
         raise DocumentValidationError(f"Path is not a regular file: {resolved}")

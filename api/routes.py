@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -130,13 +129,13 @@ async def ingest_document(
         raise DocumentValidationError("Either a file upload or a 'pdf_path' must be provided.")
 
     except DocumentValidationError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     except Exception as e:
         logger.error("Ingestion failed: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ingestion failed: {type(e).__name__}",
-        )
+        ) from e
 
 
 @app.post("/query", response_model=QueryResponse, tags=["Specification Retrieval"])
@@ -165,7 +164,7 @@ async def query_specifications(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Query failed: {type(e).__name__}",
-        )
+        ) from e
 
 
 @app.get("/specifications", response_model=list[VehicleSpecification], tags=["Specification Retrieval"])

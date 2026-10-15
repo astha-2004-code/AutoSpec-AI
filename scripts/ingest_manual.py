@@ -9,7 +9,6 @@ import time
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-from autospec.config import settings
 from autospec.pipeline import AutoSpecPipeline
 
 
@@ -22,7 +21,7 @@ def main():
 
     args = parser.parse_args()
 
-    print(f"\n🚗 AutoSpec AI — Ingestion Pipeline")
+    print("\n🚗 AutoSpec AI — Ingestion Pipeline")
     print(f"Target Manual: {args.pdf}")
     if args.start or args.end:
         print(f"Page Range: {args.start or 1} to {args.end or 'End'}")

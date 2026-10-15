@@ -73,7 +73,13 @@ select = [
 ignore = [
     "E501",  # line too long (handled by formatter)
     "B008",  # do not perform function calls in argument defaults (fastapi Depends)
+    "W291",  # trailing whitespace (preserved in mock PDF text fixtures)
+    "W293",  # blank line contains whitespace
+    "UP042", # StrEnum upgrade (preserve Python 3.10 compatibility)
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"app.py" = ["E402"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"

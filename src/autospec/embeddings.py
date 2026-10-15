@@ -37,7 +37,6 @@ class SentenceTransformerEmbedder:
     def model(self):
         """Lazy load model on first inference call."""
         if self._model is None:
-            from sentence_transformers import SentenceTransformer
 
             if hasattr(self._model, "get_embedding_dimension"):
                 self._dimension = self._model.get_embedding_dimension()

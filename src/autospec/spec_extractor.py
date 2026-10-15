@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any
 
 from autospec.chunker import SpecificationChunk
 from autospec.config import settings
@@ -240,7 +239,7 @@ class SpecificationExtractor:
         """Invoke external LLM provider using structured JSON output."""
         # Format context passages
         context_blocks = []
-        for i, (chunk, score) in enumerate(retrieved_chunks, start=1):
+        for i, (chunk, _score) in enumerate(retrieved_chunks, start=1):
             context_blocks.append(
                 f"--- EVIDENCE EXCERPT {i} (Page {chunk.page_number}, Section: {chunk.section_title}) ---\n"
                 f"{chunk.content}\n"

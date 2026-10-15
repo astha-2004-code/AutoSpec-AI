@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import os
 import time
-from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -283,7 +281,7 @@ if page == "📊 Dashboard":
         st.markdown("#### Engine & Search Configuration")
         st.write(f"- **Embedding Model**: `{settings.embedding_model}` (384-d)")
         st.write(f"- **Hybrid Fusion**: Reciprocal Rank Fusion ($k={settings.rrf_k}$)")
-        st.write(f"- **Lexical Retrieval**: BM25Plus (Automotive Tokenizer)")
+        st.write("- **Lexical Retrieval**: BM25Plus (Automotive Tokenizer)")
         st.write(f"- **Extraction Engine**: `{settings.llm_provider}` (Fallback active)")
 
     st.markdown("### 🛠️ Quick Action Shortcuts")
@@ -428,8 +426,8 @@ elif page == "📑 Specification Explorer":
 
         # Filters row
         f1, f2, f3 = st.columns([1.5, 1.5, 2])
-        subsystems = sorted(list({s for s in df["subsystem"].unique() if s}))
-        spec_types = sorted(list({s for s in df["spec_type"].unique() if s}))
+        subsystems = sorted({s for s in df["subsystem"].unique() if s})
+        spec_types = sorted({s for s in df["spec_type"].unique() if s})
 
         with f1:
             sel_subsystems = st.multiselect("Subsystems", options=subsystems, default=[])
@@ -538,7 +536,7 @@ elif page == "📂 Document Management":
                 st.error("Please enter a valid local PDF file path.")
             else:
                 progress_bar = st.progress(0, text="Initializing ingestion...")
-                
+
                 def on_progress(cur, tot):
                     pct = int((cur / tot) * 100)
                     progress_bar.progress(pct, text=f"Processing page {cur} of {tot}...")

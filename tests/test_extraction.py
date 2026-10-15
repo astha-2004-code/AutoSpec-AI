@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from autospec.chunker import SpecificationChunk
-from autospec.schemas import ExtractionMethod, SpecType, VerificationStatus
+from autospec.schemas import ExtractionMethod
 from autospec.spec_extractor import SpecificationExtractor
 
 

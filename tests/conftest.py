@@ -3,19 +3,14 @@
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator
 
 import pymupdf
 import pytest
 
-from autospec.chunker import SpecificationChunk, TableAwareChunker
-from autospec.cleaner import TextCleaner
+from autospec.chunker import SpecificationChunk
 from autospec.embeddings import DeterministicMockEmbedder
-from autospec.keyword_retriever import BM25KeywordRetriever
-from autospec.pdf_parser import ExtractedPage, PDFParser
-from autospec.section_detector import SectionDetector
-from autospec.vector_store import FAISSVectorStore
 
 
 @pytest.fixture

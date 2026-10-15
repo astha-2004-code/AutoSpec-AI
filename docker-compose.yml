@@ -1,0 +1,44 @@
+version: "3.8"
+
+services:
+  autospec-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: autospec-api
+    command: ["uvicorn", "api.routes:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    environment:
+      - AUTOSPEC_INDEX_DIR=/app/data/indexes
+      - AUTOSPEC_CACHE_DIR=/app/data/cache
+      - AUTOSPEC_EXPORT_DIR=/app/exports
+      - AUTOSPEC_LLM_PROVIDER=none
+    volumes:
+      - autospec-data:/app/data
+      - autospec-exports:/app/exports
+    restart: unless-stopped
+
+  autospec-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: autospec-ui
+    command: ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    ports:
+      - "8501:8501"
+    environment:
+      - AUTOSPEC_INDEX_DIR=/app/data/indexes
+      - AUTOSPEC_CACHE_DIR=/app/data/cache
+      - AUTOSPEC_EXPORT_DIR=/app/exports
+      - AUTOSPEC_LLM_PROVIDER=none
+    volumes:
+      - autospec-data:/app/data
+      - autospec-exports:/app/exports
+    depends_on:
+      - autospec-api
+    restart: unless-stopped
+
+volumes:
+  autospec-data:
+  autospec-exports:

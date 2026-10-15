@@ -16,7 +16,7 @@ from typing import Any
 
 from autospec.cleaner import TextCleaner
 from autospec.pdf_parser import ExtractedPage
-from autospec.section_detector import SectionDetector, SectionInfo
+from autospec.section_detector import SectionDetector
 
 
 @dataclass

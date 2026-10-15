@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -96,7 +96,7 @@ class FAISSVectorStore:
             "chunk_count": len(chunks),
             "embedding_model": model_name,
             "dimension": dim,
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
         }
         with tmp_man_path.open("w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2)
@@ -148,7 +148,7 @@ class FAISSVectorStore:
         scores, indices = self.index.search(query_vector.astype(np.float32), k_request)
 
         results: list[tuple[SpecificationChunk, float]] = []
-        for score, idx in zip(scores[0], indices[0]):
+        for score, idx in zip(scores[0], indices[0], strict=False):
             if idx < 0 or idx >= len(self.chunks):
                 continue
             chunk = self.chunks[idx]

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
-
 from autospec.chunker import SpecificationChunk
 from autospec.embeddings import DeterministicMockEmbedder
 from autospec.hybrid_retriever import HybridRetriever

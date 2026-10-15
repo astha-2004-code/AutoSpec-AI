@@ -6,7 +6,7 @@ from autospec.chunker import SpecificationChunk
 from autospec.config import settings
 from autospec.embeddings import EmbedderProtocol, get_embedder
 from autospec.keyword_retriever import BM25KeywordRetriever
-from autospec.query_router import ParsedQuery, QueryRouter
+from autospec.query_router import QueryRouter
 from autospec.vector_store import FAISSVectorStore
 
 

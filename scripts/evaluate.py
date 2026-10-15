@@ -13,7 +13,6 @@ from typing import Any
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-from autospec.config import settings
 from autospec.embeddings import DeterministicMockEmbedder, get_embedder
 from autospec.pipeline import AutoSpecPipeline
 
@@ -211,7 +210,7 @@ def run_evaluation(
                 verified_ok = True
                 grounding_verified += 1
 
-        outcome = "PASS" if (val_ok and page_ok) else "FAIL"
+        outcome = "PASS" if (val_ok and page_ok and comp_ok) else "FAIL"
         results_detail.append({
             "id": tc.id,
             "query": tc.query,
