@@ -53,3 +53,60 @@ def test_deterministic_fallback_passage_parsing():
     assert specs[0].unit == "Nm"
     assert specs[0].alternate_value == "184"
     assert specs[0].alternate_unit == "lb-ft"
+
+
+def test_gemini_extraction_provider_parses_structured_json(
+    monkeypatch, sample_chunks: list[SpecificationChunk]
+):
+    """Test native Gemini REST JSON response parses through strict Pydantic validation."""
+    import json
+
+    class _MockResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            payload = {
+                "specifications": [
+                    {
+                        "component": "Brake caliper anchor plate bolts",
+                        "spec_type": "torque",
+                        "value": "250",
+                        "unit": "Nm",
+                        "alternate_value": "184",
+                        "alternate_unit": "lb-ft",
+                        "section": "SECTION 206-03: Front Disc Brake",
+                        "page_number": 636,
+                        "source_quote": sample_chunks[0].raw_evidence,
+                    }
+                ]
+            }
+            return {"candidates": [{"content": {"parts": [{"text": json.dumps(payload)}]}}]}
+
+    class _MockClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        def post(self, url: str, headers: dict, json: dict) -> _MockResponse:
+            assert "gemini-2.5-flash:generateContent" in url
+            assert headers.get("x-goog-api-key") == "test-gemini-key"
+            return _MockResponse()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "Client", _MockClient)
+    extractor = SpecificationExtractor(
+        provider="gemini", model_name="gemini-2.5-flash", api_key="test-gemini-key"
+    )
+    specs = extractor.extract("anchor plate torque", [(sample_chunks[0], 0.95)])
+    assert len(specs) == 1
+    assert specs[0].value == "250"
+    assert specs[0].unit == "Nm"
+    assert specs[0].extraction_method == ExtractionMethod.LLM_EXTRACTION.value
+

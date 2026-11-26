@@ -15,15 +15,22 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
+/lib/
+/lib64/
+/parts/
+/sdist/
+/var/
 wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+
+# Frontend artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/playwright-report/
+frontend/test-results/
+*.tsbuildinfo
 
 # Testing and Linting
 .pytest_cache/
@@ -39,16 +46,15 @@ htmlcov/
 *.key
 
 # AutoSpec Application Storage, Indexes & Uploads
-# NOTE: In accordance with project requirements, generated indexes,
-# extracted text, and uploaded documents are strictly untracked.
 storage/
 indexes/
 uploads/
 cache/
 *.faiss
 *.index
+*.db
 
-# Strictly exclude PDFs - Manual and uploads must remain outside Git
+# Exclude external/uploaded PDFs (self-created demo PDFs are generated on startup via demo_manuals.py)
 *.pdf
 
 # IDE and OS files

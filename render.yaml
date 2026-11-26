@@ -1,0 +1,45 @@
+services:
+  - type: web
+    name: autospec-ai-api
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/v1/health
+    autoDeploy: true
+    envVars:
+      - key: AUTOSPEC_ENV
+        value: production
+      - key: AUTOSPEC_LOG_LEVEL
+        value: INFO
+      - key: AUTOSPEC_DEMO_MODE
+        value: "true"
+      - key: AUTOSPEC_EMBEDDING_MODEL
+        value: all-MiniLM-L6-v2
+      - key: AUTOSPEC_EMBEDDING_DIM
+        value: "384"
+      - key: AUTOSPEC_LLM_PROVIDER
+        value: none
+      - key: AUTOSPEC_LLM_MODEL
+        value: gemini-2.5-flash
+      - key: AUTOSPEC_MAX_UPLOAD_SIZE_MB
+        value: "50"
+      - key: AUTOSPEC_MAX_PDF_DB_MB
+        value: "25"
+      - key: AUTOSPEC_ENABLE_RERANKER
+        value: "true"
+      - key: AUTOSPEC_USE_CROSS_ENCODER_MODEL
+        value: "false"
+      - key: AUTOSPEC_STORAGE_DIR
+        value: /app/storage
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_URL_UNPOOLED
+        sync: false
+      - key: AUTOSPEC_ALLOWED_ORIGINS
+        sync: false
+      - key: AUTOSPEC_SECRET_KEY
+        generateValue: true
+      - key: AUTOSPEC_LLM_API_KEY
+        sync: false
+
