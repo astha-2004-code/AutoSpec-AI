@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -21,11 +22,13 @@ from sqlalchemy import (
     TypeDecorator,
     create_engine,
     delete,
+    event,
     func,
     or_,
     select,
     text,
 )
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from autospec.config import settings
@@ -391,12 +394,21 @@ class DatabaseManager:
         url = database_url or settings.get_database_url()
         self.database_url = url
         self.is_postgres = url.startswith("postgresql")
+        self._write_lock = threading.RLock()
         if url.startswith("sqlite"):
             self.engine = create_engine(
                 url,
-                connect_args={"check_same_thread": False},
+                connect_args={"check_same_thread": False, "timeout": 30.0},
                 pool_pre_ping=True,
             )
+
+            @event.listens_for(self.engine, "connect")
+            def _configure_sqlite_connection(dbapi_connection: Any, _record: Any) -> None:
+                cursor = dbapi_connection.cursor()
+                cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA busy_timeout=30000")
+                cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.close()
         else:
             self.engine = create_engine(
                 url,
@@ -463,13 +475,16 @@ class DatabaseManager:
         return self.SessionLocal()
 
     def ensure_session(self, session_id: str) -> None:
-        with self.get_session() as db:
+        with self._write_lock, self.get_session() as db:
             rec = db.get(SessionRecord, session_id)
             if rec:
                 rec.last_seen_at = datetime.now(UTC)
             else:
                 db.add(SessionRecord(session_id=session_id))
-            db.commit()
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
 
     def ensure_vehicle(
         self, manufacturer: str, model: str, year: int | None, variant: str = ""
@@ -477,7 +492,7 @@ class DatabaseManager:
         safe_mfg = (manufacturer or "Unknown").strip()
         safe_model = (model or "Unknown").strip()
         vehicle_id = f"{safe_mfg.lower()}_{safe_model.lower()}_{year or 'na'}"[:120]
-        with self.get_session() as db:
+        with self._write_lock, self.get_session() as db:
             rec = db.get(VehicleRecord, vehicle_id)
             if not rec:
                 db.add(
@@ -489,13 +504,16 @@ class DatabaseManager:
                         variant=variant,
                     )
                 )
-                db.commit()
+                try:
+                    db.commit()
+                except IntegrityError:
+                    db.rollback()
         return vehicle_id
 
     def upsert_document(self, record: DocumentRecord) -> DocumentInfo:
         vehicle_id = self.ensure_vehicle(record.manufacturer, record.model, record.year)
         record.vehicle_id = vehicle_id
-        with self.get_session() as db:
+        with self._write_lock, self.get_session() as db:
             existing = db.get(DocumentRecord, record.document_id)
             if existing:
                 for attr in (
@@ -649,7 +667,7 @@ class DatabaseManager:
         specs: list[dict[str, Any]],
     ) -> None:
         """Persist extracted pages, chunks, vector embeddings, and specs transactionally."""
-        with self.get_session() as db:
+        with self._write_lock, self.get_session() as db:
             db.execute(delete(CitationRecord).where(CitationRecord.document_id == document_id))
             db.execute(delete(SpecificationRecord).where(SpecificationRecord.document_id == document_id))
             db.execute(delete(ChunkEmbeddingRecord).where(ChunkEmbeddingRecord.document_id == document_id))
@@ -668,8 +686,13 @@ class DatabaseManager:
                     )
                 )
 
+            seen_cids: set[str] = set()
+            embedding_rows: list[ChunkEmbeddingRecord] = []
             for idx, c in enumerate(chunks):
                 cid = str(c.get("chunk_id") or f"{document_id}_c{idx}")
+                if cid in seen_cids:
+                    cid = f"{cid}_{idx}"
+                seen_cids.add(cid)
                 db.add(
                     DocumentChunkRecord(
                         chunk_id=cid,
@@ -686,7 +709,7 @@ class DatabaseManager:
                     )
                 )
                 if idx < len(embeddings):
-                    db.add(
+                    embedding_rows.append(
                         ChunkEmbeddingRecord(
                             chunk_id=cid,
                             document_id=document_id,
@@ -694,6 +717,9 @@ class DatabaseManager:
                         )
                     )
 
+            db.flush()
+            for emb_row in embedding_rows:
+                db.add(emb_row)
             db.flush()
 
             for s in specs:
@@ -843,7 +869,7 @@ class DatabaseManager:
         source_pdf_path: str | None = None,
         is_duplicate: bool = False,
     ) -> IngestionJobStatus:
-        with self.get_session() as db:
+        with self._write_lock, self.get_session() as db:
             rec = IngestionJobRecord(
                 job_id=job_id,
                 owner_session_id=session_id,
@@ -861,7 +887,7 @@ class DatabaseManager:
             return rec.to_schema()
 
     def update_job(self, job_id: str, **fields: Any) -> IngestionJobStatus | None:
-        with self.get_session() as db:
+        with self._write_lock, self.get_session() as db:
             rec = db.get(IngestionJobRecord, job_id)
             if not rec:
                 return None
@@ -893,7 +919,7 @@ class DatabaseManager:
             return bool(rec and rec.cancel_requested)
 
     def request_job_cancel(self, job_id: str, session_id: str) -> IngestionJobStatus | None:
-        with self.get_session() as db:
+        with self._write_lock, self.get_session() as db:
             rec = db.get(IngestionJobRecord, job_id)
             if not rec or rec.owner_session_id != session_id:
                 return None

@@ -2,7 +2,7 @@ name: AutoSpec AI CI
 
 on:
   push:
-    branches: [main, autospec-v2-upgrade]
+    branches: [main]
   pull_request:
     branches: [main]
 
