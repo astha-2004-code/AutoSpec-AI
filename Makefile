@@ -1,49 +1,51 @@
-# AutoSpec AI — Development & Operations Makefile
-
-.PHONY: help install lint test evaluate run-api run-ui docker-build docker-up docker-down clean
+.PHONY: help install migrate lint test evaluate run-api run-web docker-build docker-up docker-down clean
 
 help:
-	@echo "AutoSpec AI — Command Reference"
+	@echo "AutoSpec AI v2.0 — Command Reference"
 	@echo "--------------------------------------------------------"
-	@echo "  make install       Install package in editable mode with dev dependencies"
-	@echo "  make lint          Run Ruff static analysis and linting checks"
-	@echo "  make test          Execute automated pytest test suite"
-	@echo "  make evaluate      Run 9-case empirical benchmark evaluation"
+	@echo "  make install       Install backend package + dev tools and frontend packages"
+	@echo "  make migrate       Apply Alembic migrations to DATABASE_URL_UNPOOLED / local SQLite"
+	@echo "  make lint          Run Ruff and frontend ESLint/TypeScript"
+	@echo "  make test          Run backend pytest and frontend Vitest suites"
+	@echo "  make evaluate      Run 362-case benchmark & ablation suite"
 	@echo "  make run-api       Start FastAPI REST server on port 8000"
-	@echo "  make run-ui        Launch Streamlit intelligence dashboard on port 8501"
-	@echo "  make docker-build  Build production Docker image"
-	@echo "  make docker-up     Start API and UI containers using docker-compose"
-	@echo "  make docker-down   Stop and remove docker-compose containers"
-	@echo "  make clean         Remove build artifacts and temporary cache directories"
+	@echo "  make run-web       Start React + Vite frontend on port 5173"
+	@echo "  make docker-up     Build & start Postgres(pgvector), API, and Web containers"
+	@echo "  make docker-down   Stop and remove containers"
 
 install:
 	pip install --upgrade pip
 	pip install -e ".[dev]"
+	cd frontend && npm install
+
+migrate:
+	python -m alembic upgrade head
 
 lint:
 	ruff check .
+	cd frontend && npm run lint && npx tsc -b --noEmit
 
 test:
-	pytest -v --durations=10
+	AUTOSPEC_EMBEDDING_MODEL=mock pytest -v --durations=10
+	cd frontend && npm test
 
 evaluate:
 	python scripts/evaluate.py --mock
 
 run-api:
-	uvicorn api.routes:app --reload --host 0.0.0.0 --port 8000
+	uvicorn api.routes:app --reload --host 127.0.0.1 --port 8000
 
-run-ui:
-	streamlit run app.py --server.port 8501
+run-web:
+	cd frontend && npm run dev
 
 docker-build:
-	docker build -t autospec-ai:latest .
+	docker compose build
 
 docker-up:
-	docker-compose up -d
+	docker compose up -d
 
 docker-down:
-	docker-compose down
+	docker compose down
 
 clean:
-	rm -rf build/ dist/ *.egg-info .pytest_cache .coverage htmlcov
-	find . -type d -name "__pycache__" -exec rm -rf {} +
+	rm -rf build/ dist/ *.egg-info .pytest_cache .coverage htmlcov frontend/dist

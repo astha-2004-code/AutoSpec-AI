@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "autospec-ai"
-version = "0.1.0"
-description = "An Evidence-Grounded Automotive Specification Intelligence System"
+version = "2.0.0"
+description = "Evidence-Grounded Automotive Specification Intelligence Platform"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -18,17 +18,8 @@ keywords = [
     "specification-extraction",
     "rag",
     "hybrid-search",
+    "pgvector",
     "evidence-grounding",
-]
-classifiers = [
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Developers",
-    "Intended Audience :: Science/Research",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
     "pymupdf>=1.23.0",
@@ -36,16 +27,25 @@ dependencies = [
     "pydantic-settings>=2.2.0",
     "fastapi>=0.110.0",
     "uvicorn[standard]>=0.28.0",
-    "streamlit>=1.32.0",
+    "python-multipart>=0.0.9",
+    "sqlalchemy>=2.0.28",
+    "alembic>=1.13.0",
+    "psycopg2-binary>=2.9.9",
+    "pgvector>=0.3.2",
     "pandas>=2.2.0",
     "rank-bm25>=0.2.2",
     "faiss-cpu>=1.8.0",
     "sentence-transformers>=2.5.0",
     "python-dotenv>=1.0.0",
     "httpx>=0.27.0",
+    "anyio>=4.3.0",
 ]
 
 [project.optional-dependencies]
+ocr = [
+    "pytesseract>=0.3.10",
+    "pillow>=10.0.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
@@ -61,25 +61,8 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = [
-    "E",   # pycodestyle errors
-    "W",   # pycodestyle warnings
-    "F",   # pyflakes
-    "I",   # isort
-    "B",   # flake8-bugbear
-    "C4",  # flake8-comprehensions
-    "UP",  # pyupgrade
-]
-ignore = [
-    "E501",  # line too long (handled by formatter)
-    "B008",  # do not perform function calls in argument defaults (fastapi Depends)
-    "W291",  # trailing whitespace (preserved in mock PDF text fixtures)
-    "W293",  # blank line contains whitespace
-    "UP042", # StrEnum upgrade (preserve Python 3.10 compatibility)
-]
-
-[tool.ruff.lint.per-file-ignores]
-"app.py" = ["E402"]
+select = ["E", "W", "F", "I", "B", "C4", "UP"]
+ignore = ["E501", "B008", "W291", "W293", "UP042"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"

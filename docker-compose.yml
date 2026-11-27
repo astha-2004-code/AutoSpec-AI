@@ -1,44 +1,57 @@
-version: "3.8"
-
 services:
+  autospec-db:
+    image: pgvector/pgvector:pg16
+    container_name: autospec-pgvector
+    environment:
+      - POSTGRES_USER=autospec
+      - POSTGRES_PASSWORD=autospec_dev
+      - POSTGRES_DB=autospec
+    ports:
+      - "5432:5432"
+    volumes:
+      - autospec-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U autospec -d autospec"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   autospec-api:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: autospec-api
-    command: ["uvicorn", "api.routes:app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "8000:8000"
     environment:
-      - AUTOSPEC_INDEX_DIR=/app/data/indexes
-      - AUTOSPEC_CACHE_DIR=/app/data/cache
-      - AUTOSPEC_EXPORT_DIR=/app/exports
+      - PORT=8000
+      - DATABASE_URL=postgresql+psycopg2://autospec:autospec_dev@autospec-db:5432/autospec
+      - DATABASE_URL_UNPOOLED=postgresql+psycopg2://autospec:autospec_dev@autospec-db:5432/autospec
+      - AUTOSPEC_ENV=development
+      - AUTOSPEC_STORAGE_DIR=/app/storage
       - AUTOSPEC_LLM_PROVIDER=none
+      - AUTOSPEC_DEMO_MODE=true
+      - AUTOSPEC_ALLOWED_ORIGINS=["http://localhost:3000","http://localhost:5173","http://127.0.0.1:5173"]
     volumes:
-      - autospec-data:/app/data
-      - autospec-exports:/app/exports
+      - autospec-storage:/app/storage
+    depends_on:
+      autospec-db:
+        condition: service_healthy
     restart: unless-stopped
 
-  autospec-ui:
+  autospec-web:
     build:
-      context: .
+      context: ./frontend
       dockerfile: Dockerfile
-    container_name: autospec-ui
-    command: ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    container_name: autospec-web
     ports:
-      - "8501:8501"
-    environment:
-      - AUTOSPEC_INDEX_DIR=/app/data/indexes
-      - AUTOSPEC_CACHE_DIR=/app/data/cache
-      - AUTOSPEC_EXPORT_DIR=/app/exports
-      - AUTOSPEC_LLM_PROVIDER=none
-    volumes:
-      - autospec-data:/app/data
-      - autospec-exports:/app/exports
+      - "3000:80"
     depends_on:
-      - autospec-api
+      autospec-api:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
-  autospec-data:
-  autospec-exports:
+  autospec-pgdata:
+  autospec-storage:
