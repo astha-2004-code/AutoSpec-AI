@@ -58,8 +58,7 @@ cache/
 *.pdf
 
 # IDE and OS files
-.vscode/*
-!.vscode/settings.json
+.vscode/
 .idea/
 .DS_Store
 Thumbs.db

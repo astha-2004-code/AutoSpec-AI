@@ -7,11 +7,11 @@ graph TD
     User([Engineer / Recruiter]) -->|SPA UI + PDF.js Viewer| Web[React + TypeScript + Vite]
     Web -->|REST + X-Session-ID| API[FastAPI Service /api/v1]
     API -->|Bounded Worker Pool| Service[WorkspaceService]
-    Service --> DB[(SQLAlchemy: SQLite / PostgreSQL)]
+    Service --> DB[(Neon PostgreSQL + pgvector / SQLite)]
     Service --> Collections[Isolated Per-Document Index Collections]
 
     subgraph Ingestion [Document Intelligence & Security]
-        Upload[PDF Upload / Local Path] --> SecVal[Magic Bytes, Encryption & Page Limits]
+        Upload[Multipart PDF Upload] --> SecVal[Magic Bytes, Encryption & Page Limits]
         SecVal --> Parser[PyMuPDF Tables, Line BBoxes & Optional OCR]
         Parser --> Chunker[TableAwareChunker + Multi-Page Continuation]
     end
