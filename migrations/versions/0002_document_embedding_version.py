@@ -17,14 +17,18 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "documents",
-        sa.Column("embedding_model", sa.String(120), nullable=False, server_default=""),
-    )
-    op.add_column(
-        "documents",
-        sa.Column("embedding_dim", sa.Integer(), nullable=False, server_default="384"),
-    )
+    bind = op.get_bind()
+    existing_cols = {c["name"] for c in sa.inspect(bind).get_columns("documents")}
+    if "embedding_model" not in existing_cols:
+        op.add_column(
+            "documents",
+            sa.Column("embedding_model", sa.String(120), nullable=False, server_default=""),
+        )
+    if "embedding_dim" not in existing_cols:
+        op.add_column(
+            "documents",
+            sa.Column("embedding_dim", sa.Integer(), nullable=False, server_default="384"),
+        )
 
 
 def downgrade() -> None:

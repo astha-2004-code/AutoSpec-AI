@@ -80,16 +80,30 @@ class OnnxEmbeddingEmbedder:
             from tokenizers import Tokenizer
 
             local_only = bool(settings.offline_models or os.environ.get("HF_HUB_OFFLINE") == "1")
-            model_path = hf_hub_download(
-                repo_id=self.repo_id,
-                filename=self.onnx_file,
-                local_files_only=local_only,
-            )
-            tok_path = hf_hub_download(
-                repo_id=self.repo_id,
-                filename="tokenizer.json",
-                local_files_only=local_only,
-            )
+            try:
+                model_path = hf_hub_download(
+                    repo_id=self.repo_id,
+                    filename=self.onnx_file,
+                    local_files_only=True,
+                )
+                tok_path = hf_hub_download(
+                    repo_id=self.repo_id,
+                    filename="tokenizer.json",
+                    local_files_only=True,
+                )
+            except Exception:
+                if local_only:
+                    raise
+                model_path = hf_hub_download(
+                    repo_id=self.repo_id,
+                    filename=self.onnx_file,
+                    local_files_only=False,
+                )
+                tok_path = hf_hub_download(
+                    repo_id=self.repo_id,
+                    filename="tokenizer.json",
+                    local_files_only=False,
+                )
 
             tok = Tokenizer.from_file(tok_path)
             tok.enable_truncation(max_length=self._max_length)

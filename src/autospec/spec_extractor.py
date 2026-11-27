@@ -422,7 +422,8 @@ class SpecificationExtractor:
         else:
             return []
 
-        parsed_data = json.loads(raw_content)
+        cleaned_json = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw_content.strip(), flags=re.IGNORECASE)
+        parsed_data = json.loads(cleaned_json or "{}")
         items = (
             parsed_data
             if isinstance(parsed_data, list)

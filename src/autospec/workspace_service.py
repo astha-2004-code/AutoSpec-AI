@@ -891,7 +891,8 @@ class WorkspaceService:
         pgvector_scores: dict[str, float] = {}
         if self.db.is_postgres and mode in ("dense", "hybrid", "hybrid_rerank"):
             try:
-                q_emb = self.embedder.embed_query(effective_query)
+                q_vec = self.embedder.embed_query(effective_query)
+                q_emb = [float(x) for x in q_vec.reshape(-1).tolist()]
                 pg_rows = self.db.search_pgvector_chunks(
                     document_ids=[d.document_id for d in authorized_docs],
                     query_embedding=q_emb,

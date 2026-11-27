@@ -8,7 +8,9 @@ from api.routes import app
 
 
 def test_api_health():
-    """Test /health and /api/v1/health endpoints return 200 OK and valid payload."""
+    """Test /health returns immediately (non-blocking) and background demo finishes cleanly."""
+    import time
+
     with TestClient(app) as client:
         resp = client.get("/api/v1/health")
         assert resp.status_code == 200
@@ -17,9 +19,17 @@ def test_api_health():
         assert data["storage_ready"] is True
         assert data["database_ready"] is True
         assert data["database_backend"] in ("sqlite", "postgresql")
-        assert data["demo_ready"] is True
+        assert data["demo_state"] in ("initializing", "ready")
         assert "X-Request-ID" in resp.headers
         assert resp.headers["X-Content-Type-Options"] == "nosniff"
+
+        # Wait for non-blocking background demo bootstrap to reach ready
+        deadline = time.time() + 30
+        while data.get("demo_state") != "ready" and time.time() < deadline:
+            time.sleep(0.1)
+            data = client.get("/api/v1/health").json()
+        assert data["demo_state"] == "ready"
+        assert data["demo_ready"] is True
 
 
 def test_api_rejects_local_path_json_and_non_pdf_upload():
