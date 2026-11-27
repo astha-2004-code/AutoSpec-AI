@@ -1,17 +1,17 @@
-"""Tabular, JSON, and comparison report export utilities."""
+"""Tabular and JSON export utilities (zero-pandas runtime for <512MB deployment)."""
 
 from __future__ import annotations
 
+import csv
 import io
 import json
-
-import pandas as pd
+from typing import Any
 
 from autospec.schemas import ComparisonResponse, VehicleSpecification
 
 
 class ExportManager:
-    """Manages CSV, JSON, and Markdown exports of vehicle specifications and comparison reports."""
+    """Manages CSV, JSON, and comparison exports using Python stdlib csv/json."""
 
     EXPORT_COLUMNS = [
         "vehicle",
@@ -39,29 +39,40 @@ class ExportManager:
     ]
 
     @classmethod
-    def to_dataframe(cls, specs: list[VehicleSpecification]) -> pd.DataFrame:
-        """Convert specification list to a well-ordered Pandas DataFrame."""
+    def _build_export_rows(cls, specs: list[VehicleSpecification]) -> tuple[list[str], list[dict[str, Any]]]:
         if not specs:
-            return pd.DataFrame(columns=cls.EXPORT_COLUMNS)
-
+            return list(cls.EXPORT_COLUMNS), []
         records = [s.to_export_dict() for s in specs]
-        df = pd.DataFrame(records)
+        extra_cols: list[str] = []
+        seen = set(cls.EXPORT_COLUMNS)
+        for rec in records:
+            for key in rec:
+                if key not in seen:
+                    seen.add(key)
+                    extra_cols.append(key)
+        fieldnames = list(cls.EXPORT_COLUMNS) + extra_cols
+        normalized = [{col: rec.get(col, "") for col in fieldnames} for rec in records]
+        return fieldnames, normalized
 
-        for col in cls.EXPORT_COLUMNS:
-            if col not in df.columns:
-                df[col] = ""
+    @classmethod
+    def to_dataframe(cls, specs: list[VehicleSpecification]):
+        """Optional Pandas DataFrame helper (imported lazily to avoid ~47MB startup RAM overhead)."""
+        import pandas as pd  # type: ignore[import-not-found,import-untyped]
 
-        ordered_cols = [c for c in cls.EXPORT_COLUMNS if c in df.columns] + [
-            c for c in df.columns if c not in cls.EXPORT_COLUMNS
-        ]
-        return pd.DataFrame(df[ordered_cols])
+        fieldnames, rows = cls._build_export_rows(specs)
+        if not rows:
+            return pd.DataFrame(columns=fieldnames)
+        return pd.DataFrame(rows, columns=fieldnames)
 
     @classmethod
     def to_csv(cls, specs: list[VehicleSpecification]) -> str:
         """Generate formatted CSV string with UTF-8 encoding."""
-        df = cls.to_dataframe(specs)
+        fieldnames, rows = cls._build_export_rows(specs)
         output = io.StringIO()
-        df.to_csv(output, index=False, encoding="utf-8")
+        writer = csv.DictWriter(output, fieldnames=fieldnames, lineterminator="\n")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
         return output.getvalue()
 
     @classmethod
@@ -74,6 +85,9 @@ class ExportManager:
     def comparison_to_csv(cls, report: ComparisonResponse) -> str:
         """Export vehicle comparison matrix to CSV with original values, normalized values, and citations."""
         rows_out: list[dict[str, str | int | float]] = []
+        fieldnames: list[str] = []
+        seen_cols: set[str] = set()
+
         for row in report.rows:
             rec: dict[str, str | int | float] = {
                 "component": row.canonical_component,
@@ -98,11 +112,18 @@ class ExportManager:
                     rec[f"{prefix} (Original)"] = cell.status.upper()
                     rec[f"{prefix} (Normalized)"] = ""
                     rec[f"{prefix} (Source)"] = ""
+            for k in rec:
+                if k not in seen_cols:
+                    seen_cols.add(k)
+                    fieldnames.append(k)
             rows_out.append(rec)
 
-        df = pd.DataFrame(rows_out)
         output = io.StringIO()
-        df.to_csv(output, index=False, encoding="utf-8")
+        writer = csv.DictWriter(output, fieldnames=fieldnames, lineterminator="\n")
+        if fieldnames:
+            writer.writeheader()
+            for r in rows_out:
+                writer.writerow({k: r.get(k, "") for k in fieldnames})
         return output.getvalue()
 
     @classmethod

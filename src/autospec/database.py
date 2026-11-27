@@ -122,6 +122,8 @@ class DocumentRecord(Base):
     subsystems_json: Mapped[str] = mapped_column(Text, default="[]")
     ocr_pages: Mapped[int] = mapped_column(Integer, default=0)
     file_size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    embedding_model: Mapped[str] = mapped_column(String(120), default="")
+    embedding_dim: Mapped[int] = mapped_column(Integer, default=384)
     freshness: Mapped[str] = mapped_column(String(64), default="Indexed & Verified")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -414,8 +416,8 @@ class DatabaseManager:
                 url,
                 pool_pre_ping=True,
                 pool_recycle=300,
-                pool_size=5,
-                max_overflow=10,
+                pool_size=3,
+                max_overflow=5,
             )
         self.SessionLocal = sessionmaker(bind=self.engine, autoflush=False, expire_on_commit=False)
         self.ensure_pgvector_extension()
@@ -428,6 +430,8 @@ class DatabaseManager:
         alters = [
             ("documents", "vehicle_id", "ALTER TABLE documents ADD COLUMN vehicle_id VARCHAR(120)"),
             ("documents", "pdf_data", "ALTER TABLE documents ADD COLUMN pdf_data BLOB"),
+            ("documents", "embedding_model", "ALTER TABLE documents ADD COLUMN embedding_model VARCHAR(120) DEFAULT ''"),
+            ("documents", "embedding_dim", "ALTER TABLE documents ADD COLUMN embedding_dim INTEGER DEFAULT 384"),
             ("ingestion_jobs", "is_duplicate", "ALTER TABLE ingestion_jobs ADD COLUMN is_duplicate BOOLEAN DEFAULT 0"),
             ("ingestion_jobs", "retry_count", "ALTER TABLE ingestion_jobs ADD COLUMN retry_count INTEGER DEFAULT 0"),
             ("ingestion_jobs", "source_pdf_path", "ALTER TABLE ingestion_jobs ADD COLUMN source_pdf_path TEXT"),
@@ -532,6 +536,8 @@ class DatabaseManager:
                     "subsystems_json",
                     "ocr_pages",
                     "file_size_bytes",
+                    "embedding_model",
+                    "embedding_dim",
                     "freshness",
                     "expires_at",
                 ):
@@ -771,6 +777,31 @@ class DatabaseManager:
                     select(DocumentChunkRecord).where(DocumentChunkRecord.document_id == document_id)
                 ).all()
             )
+
+    def update_chunk_embeddings(
+        self,
+        document_id: str,
+        chunk_embeddings: list[tuple[str, list[float]]],
+        embedding_model: str,
+        embedding_dim: int,
+    ) -> None:
+        """Replace stored chunk vectors and update document embedding metadata safely."""
+        with self._write_lock, self.get_session() as db:
+            db.execute(delete(ChunkEmbeddingRecord).where(ChunkEmbeddingRecord.document_id == document_id))
+            db.flush()
+            for chunk_id, vec in chunk_embeddings:
+                db.add(
+                    ChunkEmbeddingRecord(
+                        chunk_id=chunk_id,
+                        document_id=document_id,
+                        embedding=[float(x) for x in vec],
+                    )
+                )
+            doc = db.get(DocumentRecord, document_id)
+            if doc:
+                doc.embedding_model = embedding_model
+                doc.embedding_dim = embedding_dim
+            db.commit()
 
     def search_pgvector_chunks(
         self,

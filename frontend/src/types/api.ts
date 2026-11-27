@@ -171,11 +171,14 @@ export interface HealthResponse {
   database_backend?: string;
   pgvector_enabled?: boolean;
   demo_ready: boolean;
+  demo_state?: string;
   active_llm_provider: string;
+  embedding_provider?: string;
   embedding_model: string;
   reranker_enabled: boolean;
   ocr_available: boolean;
   document_count: number;
+  memory_rss_mb?: number;
 }
 
 export interface OverviewStats {

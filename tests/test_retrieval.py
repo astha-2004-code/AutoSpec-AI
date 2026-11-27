@@ -112,3 +112,72 @@ def test_hybrid_retriever_front_vs_rear_isolation(temp_dir: Path, sample_chunks:
     assert top_front.subsystem == "front_brakes"
     assert top_front.primary_value == "37"
     assert top_front.page_number == 636
+
+
+def test_onnx_embedder_pooling_and_gemini_embedding_api(monkeypatch):
+    """Test OnnxEmbeddingEmbedder batching/LRU cache and GeminiEmbeddingEmbedder REST normalization."""
+    import numpy as np
+
+    from autospec.embeddings import GeminiEmbeddingEmbedder, OnnxEmbeddingEmbedder
+
+    class _FakeEnc:
+        def __init__(self, n: int) -> None:
+            self.ids = [101, 102, 103][:n] + [0] * max(0, 3 - n)
+            self.attention_mask = [1, 1, 1][:n] + [0] * max(0, 3 - n)
+
+    class _FakeTok:
+        def encode_batch(self, batch: list[str]):
+            return [_FakeEnc(min(3, max(1, len(x.split())))) for x in batch]
+
+    class _FakeSession:
+        def run(self, _out, feed: dict[str, np.ndarray]):
+            b, s = feed["input_ids"].shape
+            rng = np.random.RandomState(42)
+            return [rng.randn(b, s, 384).astype(np.float32)]
+
+    onnx_emb = OnnxEmbeddingEmbedder(model_name="all-MiniLM-L6-v2", cache_size=4)
+    assert onnx_emb.repo_id == "Xenova/all-MiniLM-L6-v2"
+    onnx_emb._tokenizer = _FakeTok()
+    onnx_emb._session = _FakeSession()
+    onnx_emb._input_names = {"input_ids", "attention_mask", "token_type_ids"}
+
+    vecs = onnx_emb.embed_texts(["brake torque", "oil capacity", "wheel lug"], batch_size=2)
+    assert vecs.shape == (3, 384)
+    assert np.allclose(np.linalg.norm(vecs, axis=1), 1.0, atol=1e-4)
+
+    q1 = onnx_emb.embed_query("brake torque")
+    q2 = onnx_emb.embed_query("brake torque")
+    assert q1.shape == (1, 384)
+    assert np.array_equal(q1, q2)
+
+    class _MockResp:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"embeddings": [{"values": [3.0] + [0.0] * 383}]}
+
+    class _MockClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        def post(self, url: str, headers: dict, json: dict):
+            assert "batchEmbedContents" in url
+            assert headers.get("x-goog-api-key") == "test-key"
+            assert json["requests"][0]["outputDimensionality"] == 384
+            return _MockResp()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "Client", _MockClient)
+    gem = GeminiEmbeddingEmbedder(model_name="gemini-embedding-001", api_key="test-key", dimension=384)
+    gvec = gem.embed_query("spark plug torque")
+    assert gvec.shape == (1, 384)
+    assert abs(float(gvec[0, 0]) - 1.0) < 1e-5
+

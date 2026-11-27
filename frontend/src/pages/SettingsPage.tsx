@@ -110,8 +110,15 @@ export function SettingsPage() {
               {
                 label: "Embedding / Reranker",
                 value: health
-                  ? `${health.embedding_model} • rerank=${String(health.reranker_enabled)}`
+                  ? `${health.embedding_provider || "onnx"} (${health.embedding_model}) • rerank=${String(health.reranker_enabled)}`
                   : "Unknown",
+              },
+              {
+                label: "Memory RSS",
+                value:
+                  health && typeof health.memory_rss_mb === "number"
+                    ? `${health.memory_rss_mb.toFixed(1)} MB`
+                    : "Unknown",
               },
               {
                 label: "LLM Provider Mode",

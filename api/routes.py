@@ -32,10 +32,12 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from autospec.config import (
     DocumentValidationError,
     configure_logging,
+    get_process_memory_mb,
     redact_sensitive,
     sanitize_session_id,
     settings,
 )
+from autospec.embeddings import resolve_embedding_provider
 from autospec.export import ExportManager
 from autospec.pdf_parser import is_ocr_available
 from autospec.schemas import (
@@ -61,15 +63,19 @@ _service_instance: WorkspaceService | None = None
 _service_lock = threading.Lock()
 
 
-def get_service() -> WorkspaceService:
-    """Thread-safe service singleton factory with lazy demo initialization."""
+def get_service(init_demo: bool = True) -> WorkspaceService:
+    """Thread-safe service singleton factory with non-blocking demo bootstrap."""
     global _service_instance
     if _service_instance is None:
         with _service_lock:
             if _service_instance is None:
                 svc = WorkspaceService()
-                svc.initialize_demo_manuals()
                 _service_instance = svc
+    if init_demo and _service_instance._demo_state == "pending":
+        if settings.defer_demo_init:
+            _service_instance.start_background_demo_init()
+        else:
+            _service_instance.initialize_demo_manuals()
     return _service_instance
 
 
@@ -99,13 +105,19 @@ _rate_limiter = _SlidingWindowRateLimiter(settings.rate_limit_per_minute)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize service cleanly on startup and shut down worker pools on exit."""
-    svc = get_service()
+    """Open HTTP port immediately while initializing demo manuals cleanly in background."""
+    svc = get_service(init_demo=False)
+    if settings.defer_demo_init:
+        svc.start_background_demo_init()
+    else:
+        await anyio.to_thread.run_sync(svc.initialize_demo_manuals)
     logger.info(
-        "AutoSpec AI API started (env=%s, provider=%s, postgres=%s)",
+        "AutoSpec AI API started (env=%s, llm=%s, emb_provider=%s, postgres=%s, rss_mb=%.1f)",
         settings.env,
         settings.llm_provider,
+        resolve_embedding_provider(),
         svc.db.is_postgres,
+        get_process_memory_mb(),
     )
     yield
     svc.shutdown()
@@ -176,7 +188,7 @@ v1 = APIRouter(prefix="/api/v1")
 @app.get("/health", response_model=HealthResponse, tags=["System"])
 @v1.get("/health", response_model=HealthResponse, tags=["System"])
 async def get_health(svc: WorkspaceService = Depends(get_service)) -> HealthResponse:
-    """Lightweight liveness check reporting database, pgvector, and provider capability status."""
+    """Fast non-blocking liveness check reporting DB, pgvector, demo state, and RSS memory."""
     storage_ready = settings.get_storage_path().exists()
     db_ok, db_backend, pgvec = await anyio.to_thread.run_sync(svc.db.ping)
     docs = await anyio.to_thread.run_sync(svc.list_documents, "public")
@@ -188,26 +200,33 @@ async def get_health(svc: WorkspaceService = Depends(get_service)) -> HealthResp
         database_ready=db_ok,
         database_backend=db_backend,
         pgvector_enabled=pgvec,
-        demo_ready=any(d.is_demo for d in docs),
+        demo_ready=svc._demo_initialized or any(d.is_demo for d in docs),
+        demo_state=svc._demo_state,
         active_llm_provider=settings.llm_provider,
+        embedding_provider=resolve_embedding_provider(),
         embedding_model=settings.embedding_model,
         reranker_enabled=settings.enable_reranker,
         ocr_available=is_ocr_available(),
         document_count=len(docs),
+        memory_rss_mb=get_process_memory_mb(),
     )
 
 
 @app.get("/ready", tags=["System"])
 @v1.get("/ready", tags=["System"])
 async def get_ready(svc: WorkspaceService = Depends(get_service)) -> dict[str, Any]:
-    """Readiness probe verifying storage, database connectivity, and demo collection availability."""
+    """Readiness probe verifying storage, database connectivity, and demo status."""
     db_ok, db_backend, pgvec = await anyio.to_thread.run_sync(svc.db.ping)
     docs = await anyio.to_thread.run_sync(svc.list_documents, "public")
     return {
-        "ready": settings.get_storage_path().exists() and db_ok and (len(docs) > 0 or not settings.demo_mode),
+        "ready": settings.get_storage_path().exists()
+        and db_ok
+        and (not settings.demo_mode or len(docs) > 0 or svc._demo_state == "initializing"),
+        "demo_state": svc._demo_state,
         "database_backend": db_backend,
         "pgvector_enabled": pgvec,
         "demo_documents": sum(1 for d in docs if d.is_demo),
+        "memory_rss_mb": get_process_memory_mb(),
     }
 
 
@@ -217,16 +236,19 @@ async def get_workspace_overview(
     svc: WorkspaceService = Depends(get_service),
 ) -> OverviewStats:
     """Return real database-computed statistics for the current workspace session."""
+    await anyio.to_thread.run_sync(svc.ensure_demo_ready)
     return await anyio.to_thread.run_sync(svc.get_overview_stats, session_id)
 
 
 @v1.get("/demo", tags=["System"])
 async def get_demo_workspace(svc: WorkspaceService = Depends(get_service)) -> dict[str, Any]:
     """Return redistributable demonstration manuals and curated example verification queries."""
+    await anyio.to_thread.run_sync(svc.ensure_demo_ready)
     docs = await anyio.to_thread.run_sync(svc.list_documents, "public")
     demo_docs = [d.model_dump() for d in docs if d.is_demo]
     return {
         "demo_ready": len(demo_docs) > 0,
+        "demo_state": svc._demo_state,
         "documents": demo_docs,
         "sample_queries": [
             "What is the cylinder head bolt tightening torque?",
@@ -253,6 +275,7 @@ async def list_documents(
     svc: WorkspaceService = Depends(get_service),
 ) -> list[DocumentInfo]:
     """List authorized service manuals (public read-only demos + session-scoped uploads)."""
+    await anyio.to_thread.run_sync(svc.ensure_demo_ready)
     return await anyio.to_thread.run_sync(
         lambda: svc.list_documents(
             session_id,

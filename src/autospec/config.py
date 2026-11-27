@@ -8,7 +8,6 @@ import re
 from pathlib import Path
 from typing import Literal
 
-import pymupdf
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -79,8 +78,19 @@ class Settings(BaseSettings):
     guest_upload_ttl_hours: int = Field(default=24, ge=1, le=720)
 
     # Embedding & Retrieval Settings
-    embedding_model: str = Field(default="all-MiniLM-L6-v2")
+    embedding_provider: Literal["auto", "onnx", "gemini", "sentence_transformers", "mock"] = Field(
+        default="auto",
+        description="Lightweight ONNX local runtime, external Gemini API, or explicit test mock",
+    )
+    embedding_model: str = Field(default="Xenova/all-MiniLM-L6-v2")
     embedding_dim: int = Field(default=384)
+    embedding_batch_size: int = Field(default=4, ge=1, le=64)
+    embedding_cache_size: int = Field(default=128, ge=16, le=2048)
+    max_pipeline_cache_docs: int = Field(default=2, ge=1, le=32)
+    defer_demo_init: bool = Field(
+        default=True,
+        description="Defer demo manual indexing until after server binds PORT to stay under 512MB startup RAM",
+    )
     device: str = Field(default="cpu")
     offline_models: bool = Field(default=False)
     top_k: int = Field(default=5, ge=1, le=50)
@@ -114,7 +124,7 @@ class Settings(BaseSettings):
         description="Explicit approved CORS origins",
     )
     rate_limit_per_minute: int = Field(default=90, ge=5)
-    max_concurrent_ingestions: int = Field(default=2, ge=1, le=8)
+    max_concurrent_ingestions: int = Field(default=1, ge=1, le=8)
     request_timeout_seconds: int = Field(default=30, ge=5, le=300)
 
     def get_storage_path(self) -> Path:
@@ -199,8 +209,28 @@ def redact_sensitive(text: str) -> str:
     if not text:
         return ""
     masked = re.sub(r"(postgres(?:ql)?(?:\+\w+)?://[^:]+:)[^@]+(@)", r"\1***\2", text)
-    masked = re.sub(r"\b(sk-[A-Za-z0-9\-_]{10,}|gsk_[A-Za-z0-9\-_]{10,})\b", "***REDACTED_KEY***", masked)
+    masked = re.sub(r"\b(sk-[A-Za-z0-9\-_]{10,}|gsk_[A-Za-z0-9\-_]{10,}|AIza[A-Za-z0-9\-_]{15,})\b", "***REDACTED_KEY***", masked)
     return masked
+
+
+def get_process_memory_mb() -> float:
+    """Return current process resident set size (RSS) in MiB without heavy imports."""
+    try:
+        import psutil
+
+        return round(psutil.Process().memory_info().rss / (1024 * 1024), 1)
+    except Exception:
+        pass
+    try:
+        status_path = Path("/proc/self/status")
+        if status_path.exists():
+            for line in status_path.read_text(encoding="utf-8").splitlines():
+                if line.startswith("VmRSS:"):
+                    kb = float(line.split()[1])
+                    return round(kb / 1024.0, 1)
+    except Exception:
+        pass
+    return 0.0
 
 
 class DocumentValidationError(ValueError):
@@ -279,6 +309,8 @@ def validate_pdf_bytes(
         )
 
     if verify_structure:
+        import pymupdf
+
         try:
             doc = pymupdf.open(stream=data, filetype="pdf")
         except Exception as err:
@@ -368,6 +400,8 @@ def validate_pdf_path(
             )
 
     effective_max_pages = max_pages if max_pages is not None else settings.max_pdf_pages
+    import pymupdf
+
     try:
         doc = pymupdf.open(str(resolved))
         try:

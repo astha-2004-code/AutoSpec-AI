@@ -212,3 +212,67 @@ def test_db_persistence_recovers_after_local_cache_loss(
     assert q_resp.results[0].value
 
 
+def test_reindexes_documents_safely_when_embedding_model_changes(
+    isolated_workspace: WorkspaceService, sample_synthetic_pdf: Path
+):
+    raw = sample_synthetic_pdf.read_bytes()
+    ingested = isolated_workspace.ingest_upload_sync(
+        data=raw,
+        raw_filename="reembed_check.pdf",
+        session_id="reembed_user",
+        manufacturer="Ford",
+        model="F-150",
+        year=2014,
+    )
+
+    # Simulate legacy/mismatched embedding_model metadata in DB and clear in-memory LRU cache
+    with isolated_workspace.db._write_lock, isolated_workspace.db.get_session() as db:
+        from autospec.database import DocumentRecord
+
+        rec = db.get(DocumentRecord, ingested.document_id)
+        assert rec is not None
+        rec.embedding_model = "legacy-stale-model-v0"
+        db.commit()
+    isolated_workspace._loaded_pipelines.clear()
+
+    doc = isolated_workspace.get_document(ingested.document_id, "reembed_user")
+    assert doc is not None
+    pipe = isolated_workspace._load_pipeline_for_doc(doc, session_id="reembed_user")
+    assert pipe is not None
+
+    updated = isolated_workspace.db.get_authorized_document(ingested.document_id, "reembed_user")
+    assert updated is not None
+    assert updated.embedding_model == isolated_workspace.embedder.model_name
+    assert updated.embedding_dim == isolated_workspace.embedder.dimension
+
+
+def test_nonblocking_demo_init_and_lru_pipeline_cache(
+    temp_dir: Path, monkeypatch, sample_synthetic_pdf: Path
+):
+    monkeypatch.setattr(settings, "storage_dir", temp_dir)
+    monkeypatch.setattr(settings, "index_dir", temp_dir / "indexes")
+    monkeypatch.setattr(settings, "cache_dir", temp_dir / "cache")
+    monkeypatch.setattr(settings, "demo_dir", temp_dir / "demo")
+    monkeypatch.setattr(settings, "max_pipeline_cache_docs", 2)
+
+    db = DatabaseManager(database_url=f"sqlite:///{(temp_dir / 'lru_test.db').as_posix()}")
+    svc = WorkspaceService(db=db, embedder=DeterministicMockEmbedder(384))
+    try:
+        svc.start_background_demo_init()
+        svc.ensure_demo_ready(timeout_seconds=30.0)
+        assert svc._demo_state == "ready"
+
+        # Add a third user document; bounded LRU cache must stay <= max_pipeline_cache_docs (2)
+        svc.ingest_upload_sync(
+            data=sample_synthetic_pdf.read_bytes(),
+            raw_filename="third_manual.pdf",
+            session_id="lru_user",
+        )
+        for d in svc.list_documents("lru_user"):
+            svc._load_pipeline_for_doc(d, session_id="lru_user")
+        assert len(svc._loaded_pipelines) <= 2
+    finally:
+        svc.shutdown()
+
+
+

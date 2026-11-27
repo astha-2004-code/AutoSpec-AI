@@ -402,11 +402,14 @@ class HealthResponse(BaseModel):
     database_backend: str = "sqlite"
     pgvector_enabled: bool = False
     demo_ready: bool = False
+    demo_state: str = "pending"
     active_llm_provider: str
+    embedding_provider: str = "onnx"
     embedding_model: str
     reranker_enabled: bool = True
     ocr_available: bool = False
     document_count: int = 0
+    memory_rss_mb: float = 0.0
 
 
 class OverviewStats(BaseModel):

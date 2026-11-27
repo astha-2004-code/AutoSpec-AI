@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import re
@@ -9,6 +10,7 @@ import shutil
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -24,7 +26,12 @@ from autospec.config import (
 )
 from autospec.database import DatabaseManager, DocumentRecord, compute_guest_expiry
 from autospec.demo_manuals import ensure_demo_manuals
-from autospec.embeddings import CandidateReranker, EmbedderProtocol, get_embedder
+from autospec.embeddings import (
+    CandidateReranker,
+    EmbedderProtocol,
+    get_embedder,
+    resolve_embedding_provider,
+)
 from autospec.evidence_validator import EvidenceValidator
 from autospec.hybrid_retriever import HybridRetriever, RetrievalMode
 from autospec.pdf_parser import PDFParser
@@ -63,13 +70,45 @@ class WorkspaceService:
             thread_name_prefix="autospec-ingest",
         )
         self._doc_cache_lock = threading.Lock()
-        self._loaded_pipelines: dict[str, AutoSpecPipeline] = {}
+        self._loaded_pipelines: OrderedDict[str, AutoSpecPipeline] = OrderedDict()
         self.query_router = QueryRouter()
         self.reranker = CandidateReranker()
         self.extractor = SpecificationExtractor()
         self.validator = EvidenceValidator()
         self.comparison_engine = VehicleComparisonEngine()
         self._demo_initialized = False
+        self._demo_lock = threading.Lock()
+        self._demo_state = "ready" if not settings.demo_mode else "pending"
+        self._demo_thread: threading.Thread | None = None
+
+    def _active_embedding_tag(self) -> tuple[str, int]:
+        if self._embedder is not None:
+            return getattr(self._embedder, "model_name", settings.embedding_model), self._embedder.dimension
+        provider = resolve_embedding_provider()
+        if provider == "onnx":
+            from autospec.embeddings import _ONNX_MODEL_ALIASES
+
+            repo = _ONNX_MODEL_ALIASES.get(settings.embedding_model.lower(), settings.embedding_model)
+            return f"onnx:{repo}:qint8", settings.embedding_dim
+        if provider == "gemini":
+            raw = settings.embedding_model
+            if "minilm" in raw.lower():
+                raw = "gemini-embedding-001"
+            return f"gemini:{raw}:{settings.embedding_dim}", settings.embedding_dim
+        if provider == "mock":
+            return f"mock:{settings.embedding_dim}", settings.embedding_dim
+        return settings.embedding_model, settings.embedding_dim
+
+    def _cache_pipeline(self, document_id: str, pipe: AutoSpecPipeline) -> None:
+        evicted = False
+        with self._doc_cache_lock:
+            self._loaded_pipelines[document_id] = pipe
+            self._loaded_pipelines.move_to_end(document_id)
+            while len(self._loaded_pipelines) > settings.max_pipeline_cache_docs:
+                self._loaded_pipelines.popitem(last=False)
+                evicted = True
+        if evicted:
+            gc.collect()
 
     @property
     def embedder(self) -> EmbedderProtocol:
@@ -157,68 +196,122 @@ class WorkspaceService:
             embeddings=embeddings,
             specs=specs_payload,
         )
+        pipe.current_document = None
+        pipe.last_embeddings = []
+        gc.collect()
         return len(specs_payload)
 
-    def initialize_demo_manuals(self) -> None:
-        """Seed and pre-index redistributable demonstration manuals for instant no-login showcase."""
-        if self._demo_initialized:
-            return
+    def start_background_demo_init(self) -> None:
+        """Launch demo seeding asynchronously after FastAPI binds its HTTP listening port."""
         if not settings.demo_mode:
+            self._demo_state = "ready"
             self._demo_initialized = True
             return
+        with self._demo_lock:
+            if self._demo_initialized or self._demo_thread is not None:
+                return
+            self._demo_state = "initializing"
+            self._demo_thread = threading.Thread(
+                target=self.initialize_demo_manuals,
+                name="autospec-demo-init",
+                daemon=True,
+            )
+            self._demo_thread.start()
 
-        try:
-            self.db.ensure_session("public")
-            demo_items = ensure_demo_manuals(settings.demo_dir.resolve())
-            for spec, pdf_path in demo_items:
-                existing = self.db.get_authorized_document(spec.document_id, "public")
-                has_db_chunks = bool(existing and self.db.load_document_chunks(spec.document_id))
-                if existing and has_db_chunks:
-                    continue
+    def ensure_demo_ready(self, timeout_seconds: float = 45.0) -> None:
+        """Wait for background demo seeding when serving public demo routes or queries."""
+        if not settings.demo_mode or self._demo_initialized:
+            return
+        thread = self._demo_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=timeout_seconds)
+        if not self._demo_initialized:
+            self.initialize_demo_manuals()
 
-                pipe = AutoSpecPipeline(embedder=self.embedder, index_dir=self._doc_index_dir(spec.document_id))
-                resp = pipe.ingest_file(
-                    pdf_path,
-                    force_rebuild=not has_db_chunks,
-                    document_id=spec.document_id,
-                    manufacturer=spec.manufacturer,
-                    model=spec.model,
-                    year=spec.year,
-                )
-                subsystems = sorted({c.subsystem for c in pipe.all_spec_chunks if c.subsystem})
-                spec_count = sum(1 for c in pipe.all_spec_chunks if c.chunk_type == "spec_row")
-                self.db.upsert_document(
-                    DocumentRecord(
+    def initialize_demo_manuals(self) -> None:
+        """Seed and pre-index redistributable demonstration manuals without blocking startup."""
+        with self._demo_lock:
+            if self._demo_initialized:
+                self._demo_state = "ready"
+                return
+            if not settings.demo_mode:
+                self._demo_state = "ready"
+                self._demo_initialized = True
+                return
+
+            self._demo_state = "initializing"
+            try:
+                self.db.ensure_session("public")
+                demo_items = ensure_demo_manuals(settings.demo_dir.resolve())
+                target_model, target_dim = self._active_embedding_tag()
+
+                for spec, pdf_path in demo_items:
+                    existing = self.db.get_authorized_document(spec.document_id, "public")
+                    has_db_chunks = bool(existing and self.db.load_document_chunks(spec.document_id))
+                    model_matches = bool(
+                        existing
+                        and existing.embedding_dim == target_dim
+                        and existing.embedding_model in ("", target_model)
+                    )
+                    if existing and has_db_chunks and model_matches:
+                        if not existing.embedding_model:
+                            existing.embedding_model = target_model
+                            existing.embedding_dim = target_dim
+                            self.db.upsert_document(existing)
+                        continue
+
+                    pipe = AutoSpecPipeline(
+                        embedder=self.embedder, index_dir=self._doc_index_dir(spec.document_id)
+                    )
+                    resp = pipe.ingest_file(
+                        pdf_path,
+                        force_rebuild=True,
                         document_id=spec.document_id,
-                        owner_session_id="public",
-                        filename=spec.filename,
-                        display_name=spec.display_name,
-                        fingerprint=resp.fingerprint,
-                        pdf_path=str(pdf_path.resolve()),
-                        pdf_data=self._pdf_bytes_for_db(pdf_path),
-                        total_pages=resp.total_pages,
-                        indexed_chunks=resp.chunk_count,
-                        spec_count=spec_count,
-                        is_demo=True,
-                        read_only=True,
                         manufacturer=spec.manufacturer,
                         model=spec.model,
                         year=spec.year,
-                        subsystems_json=json.dumps(subsystems),
-                        ocr_pages=pipe.current_document.ocr_page_count if pipe.current_document else 0,
-                        file_size_bytes=pdf_path.stat().st_size,
-                        freshness="Demo Pre-Indexed",
                     )
-                )
-                self._persist_pipeline_content(spec.document_id, pipe)
-                with self._doc_cache_lock:
-                    self._loaded_pipelines[spec.document_id] = pipe
-            self._demo_initialized = True
-        except Exception as err:
-            logger.exception("Failed to initialize demonstration manuals: %s", err)
+                    subsystems = sorted({c.subsystem for c in pipe.all_spec_chunks if c.subsystem})
+                    spec_count = sum(1 for c in pipe.all_spec_chunks if c.chunk_type == "spec_row")
+                    self.db.upsert_document(
+                        DocumentRecord(
+                            document_id=spec.document_id,
+                            owner_session_id="public",
+                            filename=spec.filename,
+                            display_name=spec.display_name,
+                            fingerprint=resp.fingerprint,
+                            pdf_path=str(pdf_path.resolve()),
+                            pdf_data=self._pdf_bytes_for_db(pdf_path),
+                            total_pages=resp.total_pages,
+                            indexed_chunks=resp.chunk_count,
+                            spec_count=spec_count,
+                            is_demo=True,
+                            read_only=True,
+                            manufacturer=spec.manufacturer,
+                            model=spec.model,
+                            year=spec.year,
+                            subsystems_json=json.dumps(subsystems),
+                            ocr_pages=pipe.current_document.ocr_page_count if pipe.current_document else 0,
+                            file_size_bytes=pdf_path.stat().st_size,
+                            embedding_model=self.embedder.model_name,
+                            embedding_dim=self.embedder.dimension,
+                            freshness="Demo Pre-Indexed",
+                        )
+                    )
+                    self._persist_pipeline_content(spec.document_id, pipe)
+                    self._cache_pipeline(spec.document_id, pipe)
+                    gc.collect()
+
+                self._demo_initialized = True
+                self._demo_state = "ready"
+            except Exception as err:
+                self._demo_state = "failed"
+                logger.exception("Failed to initialize demonstration manuals: %s", err)
 
     def shutdown(self) -> None:
-        """Gracefully shut down background worker pool and release DB connections."""
+        """Gracefully shut down background workers, wait for demo thread, and release DB pool."""
+        if self._demo_thread is not None and self._demo_thread.is_alive():
+            self._demo_thread.join(timeout=5.0)
         self.executor.shutdown(wait=True, cancel_futures=False)
         self.db.engine.dispose()
 
@@ -250,73 +343,104 @@ class WorkspaceService:
             except Exception:
                 pass
 
-    def _load_pipeline_for_doc(self, doc: DocumentInfo) -> AutoSpecPipeline | None:
+    def _load_pipeline_for_doc(
+        self, doc: DocumentInfo, session_id: str = "public"
+    ) -> AutoSpecPipeline | None:
         with self._doc_cache_lock:
             if doc.document_id in self._loaded_pipelines:
+                self._loaded_pipelines.move_to_end(doc.document_id)
                 return self._loaded_pipelines[doc.document_id]
 
         idx_dir = self._doc_index_dir(doc.document_id)
+        active_model = self.embedder.model_name
+        active_dim = self.embedder.dimension
+        session_scope = "public" if doc.is_demo else session_id
+        rec = self.db.get_authorized_document(doc.document_id, session_scope)
+
+        # Safely reindex vectors in DB & drop stale FAISS files if embedding model/dimension changed
+        model_mismatch = bool(
+            rec
+            and (
+                rec.embedding_dim != active_dim
+                or (rec.embedding_model and rec.embedding_model != active_model)
+            )
+        )
+        if model_mismatch and idx_dir.exists():
+            shutil.rmtree(idx_dir, ignore_errors=True)
+            idx_dir = self._doc_index_dir(doc.document_id)
+
         pipe = AutoSpecPipeline(embedder=self.embedder, index_dir=idx_dir)
-        if not pipe.load_from_cache(doc.document_id):
-            # Rehydrate cleanly from Neon PostgreSQL/SQLite records (survives Render ephemeral FS restarts)
-            db_chunks = self.db.load_document_chunks(doc.document_id)
-            db_pages = self.db.load_document_pages(doc.document_id)
-            if db_chunks:
-                hydrated_chunks: list[SpecificationChunk] = []
-                for row in db_chunks:
-                    try:
-                        meta = json.loads(row.metadata_json or "{}")
-                        if meta:
-                            hydrated_chunks.append(SpecificationChunk(**meta))
-                            continue
-                    except Exception:
-                        pass
-                    hydrated_chunks.append(
-                        SpecificationChunk(
-                            chunk_id=row.chunk_id,
-                            document_id=doc.document_id,
-                            document_name=doc.filename,
-                            page_number=row.page_number,
-                            section_id=row.subsection,
-                            section_title=row.section,
-                            subsystem=row.subsystem,
-                            chunk_type=row.chunk_type,
-                            content=row.content,
-                            raw_evidence=row.content,
-                            vehicle_make=doc.manufacturer,
-                            vehicle_model=doc.model,
-                            vehicle_year=doc.year,
-                        )
+        if not model_mismatch and pipe.load_from_cache(doc.document_id):
+            self._cache_pipeline(doc.document_id, pipe)
+            return pipe
+
+        # Rehydrate cleanly from Neon PostgreSQL/SQLite records (survives Render ephemeral FS restarts)
+        db_chunks = self.db.load_document_chunks(doc.document_id)
+        db_pages = self.db.load_document_pages(doc.document_id)
+        if db_chunks:
+            hydrated_chunks: list[SpecificationChunk] = []
+            for row in db_chunks:
+                try:
+                    meta = json.loads(row.metadata_json or "{}")
+                    if meta:
+                        hydrated_chunks.append(SpecificationChunk(**meta))
+                        continue
+                except Exception:
+                    pass
+                hydrated_chunks.append(
+                    SpecificationChunk(
+                        chunk_id=row.chunk_id,
+                        document_id=doc.document_id,
+                        document_name=doc.filename,
+                        page_number=row.page_number,
+                        section_id=row.subsection,
+                        section_title=row.section,
+                        subsystem=row.subsystem,
+                        chunk_type=row.chunk_type,
+                        content=row.content,
+                        raw_evidence=row.content,
+                        vehicle_make=doc.manufacturer,
+                        vehicle_model=doc.model,
+                        vehicle_year=doc.year,
                     )
-                if pipe.load_from_records(doc.document_id, doc.filename, db_pages, hydrated_chunks):
-                    with self._doc_cache_lock:
-                        self._loaded_pipelines[doc.document_id] = pipe
-                    return pipe
-
-            session_scope = "public" if doc.is_demo else doc.document_id
-            rec = self.db.get_authorized_document(doc.document_id, session_scope)
-            if rec and rec.pdf_data:
-                pipe.ingest_bytes(
-                    rec.pdf_data,
-                    filename=doc.filename,
-                    document_id=doc.document_id,
-                    manufacturer=doc.manufacturer,
-                    model=doc.model,
-                    year=doc.year,
                 )
-            elif rec and rec.pdf_path and Path(rec.pdf_path).exists():
-                pipe.ingest_file(
-                    rec.pdf_path,
-                    document_id=doc.document_id,
-                    manufacturer=doc.manufacturer,
-                    model=doc.model,
-                    year=doc.year,
-                )
-            else:
-                return None
+            if pipe.load_from_records(doc.document_id, doc.filename, db_pages, hydrated_chunks):
+                if model_mismatch and len(pipe.last_embeddings) == len(db_chunks):
+                    self.db.update_chunk_embeddings(
+                        document_id=doc.document_id,
+                        chunk_embeddings=[
+                            (db_chunks[i].chunk_id, list(pipe.last_embeddings[i]))
+                            for i in range(len(db_chunks))
+                        ],
+                        embedding_model=active_model,
+                        embedding_dim=active_dim,
+                    )
+                self._cache_pipeline(doc.document_id, pipe)
+                return pipe
 
-        with self._doc_cache_lock:
-            self._loaded_pipelines[doc.document_id] = pipe
+        if rec and rec.pdf_data:
+            pipe.ingest_bytes(
+                rec.pdf_data,
+                filename=doc.filename,
+                document_id=doc.document_id,
+                manufacturer=doc.manufacturer,
+                model=doc.model,
+                year=doc.year,
+            )
+            self._persist_pipeline_content(doc.document_id, pipe)
+        elif rec and rec.pdf_path and Path(rec.pdf_path).exists():
+            pipe.ingest_file(
+                rec.pdf_path,
+                document_id=doc.document_id,
+                manufacturer=doc.manufacturer,
+                model=doc.model,
+                year=doc.year,
+            )
+            self._persist_pipeline_content(doc.document_id, pipe)
+        else:
+            return None
+
+        self._cache_pipeline(doc.document_id, pipe)
         return pipe
 
     def list_documents(
@@ -638,6 +762,8 @@ class WorkspaceService:
                 subsystems_json=json.dumps(subsystems),
                 ocr_pages=doc_info.ocr_pages if doc_info else 0,
                 file_size_bytes=pdf_path.stat().st_size,
+                embedding_model=self.embedder.model_name,
+                embedding_dim=self.embedder.dimension,
                 freshness="Indexed & Verified",
                 expires_at=compute_guest_expiry(),
             )
@@ -645,8 +771,8 @@ class WorkspaceService:
         if job_id:
             self.db.update_job(job_id, stage="validating", progress_pct=95.0, message="Validating extracted specifications and citations...")
         self._persist_pipeline_content(doc_id, pipe)
-        with self._doc_cache_lock:
-            self._loaded_pipelines[doc_id] = pipe
+        self._cache_pipeline(doc_id, pipe)
+        gc.collect()
         return resp
 
     def reindex_document(
@@ -705,6 +831,7 @@ class WorkspaceService:
         """Execute multi-document hybrid/pgvector search, conversational resolution, and strict evidence grounding."""
         start_t = time.perf_counter()
         sid = sanitize_session_id(session_id)
+        self.ensure_demo_ready()
         self.db.ensure_session(sid)
 
         authorized_docs = self.list_documents(
@@ -777,7 +904,7 @@ class WorkspaceService:
                 logger.warning("pgvector search fallback to in-memory store: %s", type(err).__name__)
 
         for doc in authorized_docs:
-            pipe = self._load_pipeline_for_doc(doc)
+            pipe = self._load_pipeline_for_doc(doc, session_id=sid)
             if not pipe:
                 continue
             page_maps_by_doc[doc.document_id] = pipe.page_text_map
@@ -932,6 +1059,7 @@ class WorkspaceService:
         verification_status: str | None = None,
         search: str | None = None,
     ) -> list[VehicleSpecification]:
+        self.ensure_demo_ready()
         docs = self.list_documents(session_id)
         if document_ids:
             req_set = set(document_ids)
@@ -939,7 +1067,7 @@ class WorkspaceService:
 
         all_specs: list[VehicleSpecification] = []
         for doc in docs:
-            pipe = self._load_pipeline_for_doc(doc)
+            pipe = self._load_pipeline_for_doc(doc, session_id=session_id)
             if pipe:
                 all_specs.extend(pipe.get_all_specifications())
 
@@ -963,6 +1091,7 @@ class WorkspaceService:
         return filtered
 
     def compare_vehicles(self, request: ComparisonRequest, session_id: str) -> ComparisonResponse:
+        self.ensure_demo_ready()
         docs = self.list_documents(session_id)
         doc_map = {d.document_id: d for d in docs}
         selected_docs = [doc_map[did] for did in request.document_ids if did in doc_map]
@@ -971,7 +1100,7 @@ class WorkspaceService:
 
         specs_by_doc: dict[str, list[VehicleSpecification]] = {}
         for d in selected_docs:
-            pipe = self._load_pipeline_for_doc(d)
+            pipe = self._load_pipeline_for_doc(d, session_id=session_id)
             specs_by_doc[d.document_id] = pipe.get_all_specifications() if pipe else []
 
         return self.comparison_engine.compare(selected_docs, specs_by_doc, request)

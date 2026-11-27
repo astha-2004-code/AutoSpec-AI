@@ -14,10 +14,22 @@ services:
         value: INFO
       - key: AUTOSPEC_DEMO_MODE
         value: "true"
+      - key: AUTOSPEC_DEFER_DEMO_INIT
+        value: "true"
+      - key: AUTOSPEC_EMBEDDING_PROVIDER
+        value: onnx
       - key: AUTOSPEC_EMBEDDING_MODEL
-        value: all-MiniLM-L6-v2
+        value: Xenova/all-MiniLM-L6-v2
       - key: AUTOSPEC_EMBEDDING_DIM
         value: "384"
+      - key: AUTOSPEC_EMBEDDING_BATCH_SIZE
+        value: "4"
+      - key: AUTOSPEC_EMBEDDING_CACHE_SIZE
+        value: "128"
+      - key: AUTOSPEC_MAX_PIPELINE_CACHE_DOCS
+        value: "2"
+      - key: AUTOSPEC_MAX_CONCURRENT_INGESTIONS
+        value: "1"
       - key: AUTOSPEC_LLM_PROVIDER
         value: none
       - key: AUTOSPEC_LLM_MODEL
@@ -32,6 +44,14 @@ services:
         value: "false"
       - key: AUTOSPEC_STORAGE_DIR
         value: /app/storage
+      - key: OMP_NUM_THREADS
+        value: "1"
+      - key: OPENBLAS_NUM_THREADS
+        value: "1"
+      - key: TOKENIZERS_PARALLELISM
+        value: "false"
+      - key: MALLOC_TRIM_THRESHOLD_
+        value: "65536"
       - key: DATABASE_URL
         sync: false
       - key: DATABASE_URL_UNPOOLED
@@ -42,4 +62,3 @@ services:
         generateValue: true
       - key: AUTOSPEC_LLM_API_KEY
         sync: false
-

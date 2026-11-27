@@ -87,3 +87,17 @@ jobs:
 
       - name: Build Frontend Production Container
         run: docker build -t autospec-web:ci -f frontend/Dockerfile ./frontend
+
+      - name: Build & Smoke-Test Backend Container (512 MB Limit)
+        run: |
+          docker build -t autospec-api:ci -f Dockerfile .
+          docker run -d --name autospec-api-ci --memory=512m -p 8000:8000 -e PORT=8000 -e AUTOSPEC_ENV=production -e AUTOSPEC_EMBEDDING_PROVIDER=onnx -e AUTOSPEC_EMBEDDING_MODEL=Xenova/all-MiniLM-L6-v2 autospec-api:ci
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8000/api/v1/health | grep -q '"status":"healthy"'; then
+              break
+            fi
+            sleep 1
+          done
+          curl -sf http://localhost:8000/api/v1/health
+          curl -sf http://localhost:8000/api/v1/demo | grep -q '"demo_ready":true'
+          docker rm -f autospec-api-ci

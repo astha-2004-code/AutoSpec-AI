@@ -1,11 +1,10 @@
-# Multi-stage production Dockerfile for AutoSpec AI 2.0 FastAPI Backend (Render / Docker)
+# Multi-stage production Dockerfile for AutoSpec AI 2.0 FastAPI Backend (<512MB Render Free Tier)
 FROM python:3.11-slim AS builder
 
 WORKDIR /build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
-    curl \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
@@ -14,11 +13,11 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 COPY requirements.txt pyproject.toml README.md ./
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt
 
-# Pre-cache lightweight CPU embedding model at build time for fast cold-start
-ARG PRECACHE_EMBEDDING_MODEL=all-MiniLM-L6-v2
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('${PRECACHE_EMBEDDING_MODEL}')" || true
+# Pre-cache lightweight INT8 quantized ONNX embedding model (~23 MB, zero PyTorch/CUDA)
+ARG PRECACHE_ONNX_REPO=Xenova/all-MiniLM-L6-v2
+RUN python -c "from huggingface_hub import hf_hub_download; hf_hub_download('${PRECACHE_ONNX_REPO}', 'onnx/model_quantized.onnx'); hf_hub_download('${PRECACHE_ONNX_REPO}', 'tokenizer.json')" || true
 
 FROM python:3.11-slim AS runner
 
@@ -35,6 +34,11 @@ ENV PATH="/opt/venv/bin:$PATH"
 ENV HF_HOME="/home/autospec/.cache/huggingface"
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV OMP_NUM_THREADS=1
+ENV OPENBLAS_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
+ENV TOKENIZERS_PARALLELISM=false
+ENV MALLOC_TRIM_THRESHOLD_=65536
 ENV PORT=8000
 
 RUN groupadd -r autospec && useradd -r -g autospec -d /app autospec && \
@@ -54,7 +58,7 @@ USER autospec
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=25s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD sh -c "curl -f http://localhost:${PORT:-8000}/api/v1/health || exit 1"
 
-CMD ["sh", "-c", "alembic upgrade head || true; exec uvicorn api.routes:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
+CMD ["sh", "-c", "python -m alembic upgrade head && exec uvicorn api.routes:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
