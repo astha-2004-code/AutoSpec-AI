@@ -19,7 +19,7 @@ install:
 	cd frontend && npm install
 
 migrate:
-	alembic upgrade head
+	python -m alembic upgrade head
 
 lint:
 	ruff check .
